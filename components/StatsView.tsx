@@ -42,12 +42,12 @@ export function PoolTable({ pools, order, contributors, lowHours, compact }: {
             <th>Language</th>
             {contributors && !compact && <th className="r">Contributors</th>}
             <th className="r">Available</th>
-            <th style={{ width: '22%' }}></th>
-            <th className="r">Recording now</th>
+            {!compact && <th style={{ width: '22%' }}></th>}
+            <th className="r">{compact ? 'Now' : 'Recording now'}</th>
             {!compact && <th className="r">Submitted</th>}
             {!compact && <th className="r">Approved</th>}
-            <th className="r">Claims / h</th>
-            <th className="r">Runs out in</th>
+            <th className="r">{compact ? 'Claims/h' : 'Claims / h'}</th>
+            <th className="r">{compact ? 'Runs out' : 'Runs out in'}</th>
           </tr>
         </thead>
         <tbody>
@@ -62,12 +62,12 @@ export function PoolTable({ pools, order, contributors, lowHours, compact }: {
                 </td>
                 {contributors && !compact && <td className="r muted">{contributors[p.language] ?? 0}</td>}
                 <td className="r">{p.available.toLocaleString()}</td>
-                <td><div className="bar"><span style={{ width: `${(p.available / max) * 100}%` }} /></div></td>
+                {!compact && <td><div className="bar"><span style={{ width: `${(p.available / max) * 100}%` }} /></div></td>}
                 <td className="r">{p.claimed}</td>
                 {!compact && <td className="r">{p.submitted}</td>}
                 {!compact && <td className="r">{p.approved}</td>}
                 <td className="r">{p.claimsLastWindow}</td>
-                <td className="r">{hoursText(p.hoursLeft)}</td>
+                <td className="r" style={{ whiteSpace: 'nowrap' }}>{compact && p.hoursLeft === null ? '–' : hoursText(p.hoursLeft)}</td>
               </tr>
             );
           })}

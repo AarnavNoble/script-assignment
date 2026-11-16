@@ -115,9 +115,11 @@ export async function findOrphans(): Promise<string[]> {
   const known = await pool().query('SELECT s3_key FROM recordings WHERE s3_key = ANY($1)', [objs.map((o) => o.key)]);
   const have = new Set(known.rows.map((r) => r.s3_key));
   const orphans = objs.map((o) => o.key).filter((k) => !have.has(k));
-  if (orphans.length) {
+  // alert when the count changes, not on every run (the same leftovers would repeat every 5 min)
+  const last = await pool().query(`SELECT (detail->>'count')::int AS n FROM alerts WHERE kind = 'orphans' ORDER BY id DESC LIMIT 1`);
+  if (orphans.length && last.rows[0]?.n !== orphans.length) {
     await pool().query(`INSERT INTO alerts (kind, message, detail) VALUES ('orphans', $1, $2)`,
-      [`${orphans.length} uploaded objects with no recording`, JSON.stringify({ keys: orphans.slice(0, 100) })]);
+      [`${orphans.length} uploaded objects with no recording`, JSON.stringify({ count: orphans.length, keys: orphans.slice(0, 100) })]);
   }
   return orphans;
 }
