@@ -3,8 +3,12 @@ import { fileURLToPath } from 'node:url';
 
 const root = fileURLToPath(new URL('.', import.meta.url));
 
-// Tests run against the real docker Postgres (port 5433) and MinIO, in their own DB + bucket.
+// Tests run against the real docker Postgres and MinIO, in their own DB + bucket.
 // Every test drops and re-seeds the schema, so files and tests run strictly one at a time.
+// Same Postgres server as .env's DATABASE_URL (host/port), but the tests' own database.
+try { process.loadEnvFile('.env'); } catch { /* no .env: use the compose default */ }
+const PG_BASE = (process.env.DATABASE_URL ?? 'postgres://postgres:postgres@localhost:5432/scripts').replace(/\/[^/]*$/, '');
+
 export default defineConfig({
   resolve: { alias: { '@': root } },
   test: {
@@ -17,7 +21,7 @@ export default defineConfig({
     globalSetup: ['tests/global-setup.ts'],
     setupFiles: ['tests/setup.ts'],
     env: {
-      DATABASE_URL: 'postgres://postgres:postgres@localhost:5433/sa_tests',
+      DATABASE_URL: `${PG_BASE}/sa_tests`,
       S3_ENDPOINT: 'http://localhost:9000',
       S3_BUCKET: 'recordings-tests',
       S3_KEY: 'minioadmin',

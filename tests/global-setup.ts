@@ -3,7 +3,8 @@ import { ensureDatabase } from '../db/seed';
 
 // Runs once before all test files. vitest's test.env is not applied here, so use literals.
 export default async function setup() {
-  await ensureDatabase('postgres://postgres:postgres@localhost:5433/sa_tests');
+  try { process.loadEnvFile('.env'); } catch { /* compose default */ }
+  await ensureDatabase(`${(process.env.DATABASE_URL ?? 'postgres://postgres:postgres@localhost:5432/scripts').replace(/\/[^/]*$/, '')}/sa_tests`);
   const s3 = new S3Client({
     endpoint: 'http://localhost:9000',
     region: 'us-east-1',

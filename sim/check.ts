@@ -79,7 +79,7 @@ const fi = (x: number) => x.toLocaleString('en-US');
 
 export async function checkRun(partial: Partial<CheckOptions> = {}): Promise<CheckResult> {
   const o: CheckOptions = {
-    databaseUrl: process.env.CHECK_DATABASE_URL || 'postgres://postgres:postgres@localhost:5433/sa_sim',
+    databaseUrl: process.env.CHECK_DATABASE_URL || `${(process.env.DATABASE_URL ?? 'postgres://postgres:postgres@localhost:5432/scripts').replace(/\/[^/]*$/, '')}/sa_sim`,
     outDir: 'results', plot: true, write: true, ...partial,
   };
   const outDir = resolve(ROOT, o.outDir);
@@ -599,7 +599,7 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
   checkRun({
     outDir: get('--out') ?? 'results',
     runDir: get('--run'),
-    databaseUrl: get('--db') ?? process.env.CHECK_DATABASE_URL ?? 'postgres://postgres:postgres@localhost:5433/sa_sim',
+    databaseUrl: get('--db') ?? process.env.CHECK_DATABASE_URL ?? `${(process.env.DATABASE_URL ?? 'postgres://postgres:postgres@localhost:5432/scripts').replace(/\/[^/]*$/, '')}/sa_sim`,
     plot: !a.includes('--no-plot'),
     scale: get('--scale') ? Number(get('--scale')) : undefined,
   })

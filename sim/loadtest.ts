@@ -31,7 +31,7 @@ const MEASURE_S = Number(get('--measure') ?? 60);
 const WARMUP_S = Number(get('--warmup') ?? 15);
 const SCRIPTS_PER_LANG = Number(get('--scripts') ?? 100000);
 const PORT = Number(get('--port') ?? 3321);
-const DB = get('--db') ?? 'postgres://postgres:postgres@localhost:5433/sa_loadtest';
+const DB = get('--db') ?? `${(process.env.DATABASE_URL ?? 'postgres://postgres:postgres@localhost:5432/scripts').replace(/\/[^/]*$/, '')}/sa_loadtest`;
 const SKIP = new Set((get('--skip') ?? '').split(','));
 const CONTRIBUTORS = Number(get('--contributors') ?? 300000);
 const LEASE_S = 600, HB_S = 30, SESSION_MEDIAN_S = 300, SESSION_SIGMA = 0.5;

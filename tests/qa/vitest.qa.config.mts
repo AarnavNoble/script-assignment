@@ -6,6 +6,10 @@ import { fileURLToPath } from 'node:url';
 
 const root = fileURLToPath(new URL('../..', import.meta.url));
 
+// Same Postgres server as .env's DATABASE_URL (host/port), but the tests' own database.
+try { process.loadEnvFile('.env'); } catch { /* no .env: use the compose default */ }
+const PG_BASE = (process.env.DATABASE_URL ?? 'postgres://postgres:postgres@localhost:5432/scripts').replace(/\/[^/]*$/, '');
+
 export default defineConfig({
   root,
   resolve: { alias: { '@': root } },
@@ -17,7 +21,7 @@ export default defineConfig({
     hookTimeout: 60_000,
     globalSetup: ['tests/qa/global-setup.ts'],
     env: {
-      DATABASE_URL: 'postgres://postgres:postgres@localhost:5433/sa_qa',
+      DATABASE_URL: `${PG_BASE}/sa_qa`,
       S3_ENDPOINT: 'http://localhost:9000',
       S3_BUCKET: 'recordings-qa',
       S3_KEY: 'minioadmin',

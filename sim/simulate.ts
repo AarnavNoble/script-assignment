@@ -91,7 +91,7 @@ export const DEFAULTS: SimOptions = {
   server: 'start',
   build: false,
   distDir: '.next-sim',
-  databaseUrl: 'postgres://postgres:postgres@localhost:5433/sa_sim',
+  databaseUrl: `${(process.env.DATABASE_URL ?? 'postgres://postgres:postgres@localhost:5432/scripts').replace(/\/[^/]*$/, '')}/sa_sim`,
   bucket: 'recordings-sim',
   pgPoolMax: 20,
   reseed: true,

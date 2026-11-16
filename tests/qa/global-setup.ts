@@ -3,7 +3,8 @@ import { ensureDatabase } from '../../db/seed';
 
 // Only used by tests/qa/vitest.qa.config.mts. test.env isn't applied in globalSetup, so literals.
 export default async function setup() {
-  await ensureDatabase('postgres://postgres:postgres@localhost:5433/sa_qa');
+  try { process.loadEnvFile('.env'); } catch { /* compose default */ }
+  await ensureDatabase(`${(process.env.DATABASE_URL ?? 'postgres://postgres:postgres@localhost:5432/scripts').replace(/\/[^/]*$/, '')}/sa_qa`);
   const s3 = new S3Client({
     endpoint: 'http://localhost:9000', region: 'us-east-1', forcePathStyle: true,
     credentials: { accessKeyId: 'minioadmin', secretAccessKey: 'minioadmin' },

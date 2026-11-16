@@ -21,7 +21,7 @@ import type { SessionRecord } from './lib/behaviors';
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const RES = join(ROOT, 'results');
 const RUNS = join(RES, 'exp-runs');
-const PG = 'postgres://postgres:postgres@localhost:5433';
+const PG = (process.env.DATABASE_URL ?? 'postgres://postgres:postgres@localhost:5432/scripts').replace(/\/[^/]*$/, '');
 const POPULAR = ['en', 'es', 'hi', 'pt'];
 const PAY_PER_H = 5; // $ per approved audio hour, also used as the value of an hour of contributor time
 const STALL = { median: 3, sigma: 0.8, max: 30 }; // fixed stall-length distribution for the lease sweep (sim-min)
