@@ -29,6 +29,8 @@ CREATE TABLE scripts (
 );
 -- the claim query scans this: free or possibly-expired rows per language, in id order
 CREATE INDEX scripts_free ON scripts (language, id) WHERE status IN ('available','claimed');
+-- fresh_first claim order: never-held free scripts, in id order
+CREATE INDEX scripts_fresh ON scripts (language, id) WHERE status = 'available' AND prev_token IS NULL;
 CREATE INDEX scripts_claimed_expiry ON scripts (lease_expires_at) WHERE status = 'claimed';
 CREATE UNIQUE INDEX scripts_claim_token ON scripts (claim_token) WHERE claim_token IS NOT NULL;
 CREATE INDEX scripts_prev_token ON scripts (prev_token) WHERE prev_token IS NOT NULL;

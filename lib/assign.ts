@@ -135,18 +135,42 @@ async function claimOnce(c: PoolClient, contributorId: number, language: string 
   // 3. Claim. Expired leases count as free right here, so recovery never waits for the background job.
   //    SKIP LOCKED: concurrent claimers each take a different row instead of queueing on the same one.
   //    The CTE reads the row *before* the update, so we know whose lease (if any) we just took over.
-  //    Order: 'lowest_id' takes expired leases as soon as they're the lowest free id (fastest recovery);
-  //    'fresh_first' takes never-claimed rows first, giving a stalled contributor more time to submit
-  //    late before their script is re-claimed. Measured in sim/experiments.ts.
-  //    A row the job reset after expiry still carries prev_token, so it counts as "someone's" too.
-  const order = config.claimOrder() === 'fresh_first' ? `(status <> 'available' OR prev_token IS NOT NULL), id` : 'id';
-  const got = await c.query(
+  //    Order: 'lowest_id' takes the lowest free id, expired leases included (fastest recovery).
+  //    'fresh_first' first takes a never-held script (status available, no prev_token, from its own
+  //    partial index), so a stalled contributor's expired script is re-claimed only when nothing fresher
+  //    is left; that gives them time to come back and submit late. Two index-ordered queries rather than
+  //    one ORDER BY on a computed key, which would sort every free row of the language. Measured in
+  //    sim/experiments.ts.
+  let got = config.claimOrder() === 'fresh_first'
+    ? await pickAndClaim(c, contributorId, lang, lease, `status = 'available' AND prev_token IS NULL`)
+    : null;
+  if (!got?.rowCount) {
+    got = await pickAndClaim(c, contributorId, lang, lease,
+      `(status = 'available' OR (status = 'claimed' AND lease_expires_at <= now()))`);
+  }
+
+  if (!got.rowCount) {
+    await logEvent(c, { contributorId, event: 'pool_empty', language: lang });
+    return { status: 'empty', language: lang, message: `No scripts left in ${lang} right now. Please check back later.` };
+  }
+
+  const r = got.rows[0];
+  if (r.old_status === 'claimed') {
+    // we took over someone's expired lease; record that it expired
+    await logEvent(c, { scriptId: r.id, contributorId: r.old_by, token: r.old_token, event: 'expired', language: r.language, detail: { by: 'reclaim' } });
+  }
+  await logEvent(c, { scriptId: r.id, contributorId, token: r.claim_token, event: 'claimed', language: r.language, leaseExpiresAt: r.lease_expires_at });
+  return toClaim('claimed', r);
+}
+
+/** Step 3 of claim: take the lowest-id row matching `candidates` in this language (SKIP LOCKED). */
+function pickAndClaim(c: PoolClient, contributorId: number, lang: string, lease: number, candidates: string) {
+  return c.query(
     `WITH pick AS (
        SELECT id, status AS old_status, claim_token AS old_token, claimed_by AS old_by
        FROM scripts
-       WHERE language = $2
-         AND (status = 'available' OR (status = 'claimed' AND lease_expires_at <= now()))
-       ORDER BY ${order}
+       WHERE language = $2 AND ${candidates}
+       ORDER BY id
        LIMIT 1
        FOR UPDATE SKIP LOCKED
      )
@@ -162,19 +186,6 @@ async function claimOnce(c: PoolClient, contributorId: number, language: string 
        pick.old_status, pick.old_token, pick.old_by`,
     [contributorId, lang, lease],
   );
-
-  if (!got.rowCount) {
-    await logEvent(c, { contributorId, event: 'pool_empty', language: lang });
-    return { status: 'empty', language: lang, message: `No scripts left in ${lang} right now. Please check back later.` };
-  }
-
-  const r = got.rows[0];
-  if (r.old_status === 'claimed') {
-    // we took over someone's expired lease; record that it expired
-    await logEvent(c, { scriptId: r.id, contributorId: r.old_by, token: r.old_token, event: 'expired', language: r.language, detail: { by: 'reclaim' } });
-  }
-  await logEvent(c, { scriptId: r.id, contributorId, token: r.claim_token, event: 'claimed', language: r.language, leaseExpiresAt: r.lease_expires_at });
-  return toClaim('claimed', r);
 }
 
 /** Extend a live lease. A lease that already expired can't be extended here; claim() revives it if still ours. */
