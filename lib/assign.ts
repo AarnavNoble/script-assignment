@@ -86,12 +86,13 @@ async function claimOnce(c: PoolClient, contributorId: number, language: string 
   if (who.rowCount === 0) throw new AppError(404, 'unknown_contributor', `no contributor ${contributorId}`);
   const lang = language ?? (who.rows[0].language as string);
 
-  // 1. Resume a live lease (same script, same token).
+  // 1. Resume a live lease (same script, same token). A client that just showed up is alive, so the
+  //    lease is extended too: otherwise a resume with seconds left can expire before the first heartbeat.
   const live = await c.query(
-    `SELECT ${CLAIM_COLUMNS} FROM scripts
+    `UPDATE scripts SET lease_expires_at = now() + make_interval(secs => $2)
      WHERE claimed_by = $1 AND status = 'claimed' AND lease_expires_at > now()
-     FOR UPDATE`,
-    [contributorId],
+     RETURNING ${CLAIM_COLUMNS}`,
+    [contributorId, lease],
   );
   if (live.rowCount) {
     const r = live.rows[0];
@@ -132,13 +133,17 @@ async function claimOnce(c: PoolClient, contributorId: number, language: string 
   // 3. Claim. Expired leases count as free right here, so recovery never waits for the background job.
   //    SKIP LOCKED: concurrent claimers each take a different row instead of queueing on the same one.
   //    The CTE reads the row *before* the update, so we know whose lease (if any) we just took over.
+  //    Order: 'lowest_id' takes expired leases as soon as they're the lowest free id (fastest recovery);
+  //    'fresh_first' takes never-claimed rows first, giving a stalled contributor more time to submit
+  //    late before their script is re-claimed. Measured in sim/experiments.ts.
+  const order = config.claimOrder() === 'fresh_first' ? `(status <> 'available'), id` : 'id';
   const got = await c.query(
     `WITH pick AS (
        SELECT id, status AS old_status, claim_token AS old_token, claimed_by AS old_by
        FROM scripts
        WHERE language = $2
          AND (status = 'available' OR (status = 'claimed' AND lease_expires_at <= now()))
-       ORDER BY id
+       ORDER BY ${order}
        LIMIT 1
        FOR UPDATE SKIP LOCKED
      )
@@ -169,27 +174,32 @@ async function claimOnce(c: PoolClient, contributorId: number, language: string 
   return toClaim('claimed', r);
 }
 
-/** Extend a live lease. A lease that already expired can't be revived: the script may be someone else's now. */
+/** Extend a live lease. A lease that already expired can't be extended here; claim() revives it if still ours. */
 export async function heartbeat(contributorId: number, token: string, opts: Opts = {}) {
   const lease = opts.leaseSeconds ?? config.leaseSeconds();
-  const r = await pool().query(
-    `UPDATE scripts SET lease_expires_at = now() + make_interval(secs => $3)
-     WHERE claim_token = $1 AND claimed_by = $2 AND status = 'claimed' AND lease_expires_at > now()
-     RETURNING id, language, lease_expires_at,
-       EXTRACT(EPOCH FROM (lease_expires_at - now()))::float8 AS remaining`,
-    [token, contributorId, lease],
-  );
-  if (!r.rowCount) {
-    const ev = await scriptIdFromEvents(token); // so the loss shows up in the script's history
-    await logEvent(pool(), { scriptId: ev?.scriptId, contributorId, token, event: 'lost', language: ev?.language });
-    throw new AppError(409, 'lease_lost', 'Your session on this script expired. Get a new script to continue.');
-  }
-  const row = r.rows[0];
-  await logEvent(pool(), { scriptId: row.id, contributorId, token, event: 'heartbeat', language: row.language, leaseExpiresAt: row.lease_expires_at });
-  return {
-    leaseExpiresAt: new Date(row.lease_expires_at).toISOString(),
-    leaseRemainingSeconds: Math.max(0, Number(row.remaining)),
-  };
+  // the event goes in the same transaction, so the audit log's timestamps match the row changes
+  const out = await tx(async (c) => {
+    const r = await c.query(
+      `UPDATE scripts SET lease_expires_at = now() + make_interval(secs => $3)
+       WHERE claim_token = $1 AND claimed_by = $2 AND status = 'claimed' AND lease_expires_at > now()
+       RETURNING id, language, lease_expires_at,
+         EXTRACT(EPOCH FROM (lease_expires_at - now()))::float8 AS remaining`,
+      [token, contributorId, lease],
+    );
+    if (!r.rowCount) {
+      const ev = await scriptIdFromEvents(token); // so the loss shows up in the script's history
+      await logEvent(c, { scriptId: ev?.scriptId, contributorId, token, event: 'lost', language: ev?.language });
+      return null;
+    }
+    const row = r.rows[0];
+    await logEvent(c, { scriptId: row.id, contributorId, token, event: 'heartbeat', language: row.language, leaseExpiresAt: row.lease_expires_at });
+    return {
+      leaseExpiresAt: new Date(row.lease_expires_at).toISOString(),
+      leaseRemainingSeconds: Math.max(0, Number(row.remaining)),
+    };
+  });
+  if (!out) throw new AppError(409, 'lease_lost', 'Your session on this script expired. Get a new script to continue.');
+  return out;
 }
 
 /**
@@ -198,18 +208,20 @@ export async function heartbeat(contributorId: number, token: string, opts: Opts
  * revives the same script and token unless someone else took it in between.
  */
 export async function release(contributorId: number, token: string): Promise<{ released: boolean }> {
-  const r = await pool().query(
-    `UPDATE scripts
-     SET status = 'available', prev_token = claim_token, prev_claimed_by = claimed_by,
-         claimed_by = NULL, claim_token = NULL, lease_expires_at = NULL
-     WHERE claim_token = $1 AND claimed_by = $2 AND status = 'claimed'
-     RETURNING id, language`,
-    [token, contributorId],
-  );
-  if (r.rowCount) {
-    await logEvent(pool(), { scriptId: r.rows[0].id, contributorId, token, event: 'released', language: r.rows[0].language });
-  }
-  return { released: !!r.rowCount };
+  return tx(async (c) => {
+    const r = await c.query(
+      `UPDATE scripts
+       SET status = 'available', prev_token = claim_token, prev_claimed_by = claimed_by,
+           claimed_by = NULL, claim_token = NULL, lease_expires_at = NULL
+       WHERE claim_token = $1 AND claimed_by = $2 AND status = 'claimed'
+       RETURNING id, language`,
+      [token, contributorId],
+    );
+    if (r.rowCount) {
+      await logEvent(c, { scriptId: r.rows[0].id, contributorId, token, event: 'released', language: r.rows[0].language });
+    }
+    return { released: !!r.rowCount };
+  });
 }
 
 /**

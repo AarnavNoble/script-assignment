@@ -228,6 +228,28 @@ describe('2-10. single-contributor lifecycle', () => {
     await expect(submit(1, a.token)).resolves.toMatchObject({ status: 'submitted', late: false });
   });
 
+  it('2b. resume extends the lease (a returning client is alive; avoids expiring before its first heartbeat)', async () => {
+    const a = claimed(await claim(1, 'en', { leaseSeconds: 2 }));
+    await sleep(1200);
+    const b = claimed(await claim(1, 'en', { leaseSeconds: 600 }));
+    expect(b).toMatchObject({ status: 'resumed', token: a.token });
+    expect(b.leaseRemainingSeconds).toBeGreaterThan(590);
+  });
+
+  it('3b. CLAIM_ORDER=fresh_first takes never-claimed scripts before expired leases', async () => {
+    const a = claimed(await claim(1, 'en', { leaseSeconds: 1 }));
+    await sleep(1500);
+    process.env.CLAIM_ORDER = 'fresh_first';
+    try {
+      const b = claimed(await claim(2, 'en'));
+      expect(b.scriptId).not.toBe(a.scriptId); // the expired one is left for its owner a while longer
+    } finally {
+      delete process.env.CLAIM_ORDER;
+    }
+    const c = claimed(await claim(3, 'en'));
+    expect(c.scriptId).toBe(a.scriptId); // default order: lowest free id, expired lease included
+  });
+
   it('8b. release by a different contributor is a no-op', async () => {
     const a = claimed(await claim(1, 'en'));
     expect(await release(2, a.token)).toEqual({ released: false });

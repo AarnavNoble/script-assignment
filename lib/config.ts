@@ -14,6 +14,8 @@ export const config = {
   orphanAgeSeconds: () => num('ORPHAN_AGE_SECONDS', 3600),
   maxUploadBytes: () => num('MAX_UPLOAD_BYTES', 50 * 1024 * 1024),
   uploadUrlSeconds: () => num('UPLOAD_URL_SECONDS', 900),
+  // claim order: 'lowest_id' (default) or 'fresh_first' (never-claimed scripts before expired leases)
+  claimOrder: () => (process.env.CLAIM_ORDER === 'fresh_first' ? 'fresh_first' : 'lowest_id') as 'lowest_id' | 'fresh_first',
   // pay rate per approved hour of audio, in cents
   payCentsPerHour: () => num('PAY_CENTS_PER_HOUR', 500),
 };
