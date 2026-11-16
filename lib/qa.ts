@@ -25,6 +25,7 @@ import { AppError } from './errors';
 
 /** Advisory-lock namespace (first key of the two-int form) so we never collide with other users. */
 export const QA_LOCK_NS = 0x51a; // "QA"
+export const QA_DUP_NS = 0x51b; // per-audio-hash lock: duplicate check + decision happen as one step
 
 export type QaResult = {
   processed: number;
@@ -49,7 +50,7 @@ export async function runQaOnce(opts: { limit?: number; logger?: Logger } = {}):
     const rows = await claimBatch(c, limit);
     for (const row of rows) {
       try {
-        const decision = await processOne(row);
+        const decision = await processOne(row, c);
         out.processed++;
         out[decision]++;
       } catch (e) {
@@ -104,7 +105,7 @@ async function claimBatch(c: PoolClient, limit: number): Promise<Row[]> {
 
 type Decision = 'approved' | 'rejected' | 'review';
 
-async function processOne(row: Row): Promise<Decision> {
+async function processOne(row: Row, c: PoolClient): Promise<Decision> {
   let bytes: Buffer;
   try {
     bytes = await getObjectBytes(row.s3_key);
@@ -136,6 +137,18 @@ async function processOne(row: Row): Promise<Decision> {
   // Save first: the duplicate lookup below relies on our own hash being visible to other workers.
   await saveMetrics(row.id, a.metrics);
 
+  // Hold a per-hash lock from the duplicate lookup until the decision commits. Otherwise two workers
+  // with identical uploads can each look before the other has decided, and both approve.
+  // Taken on this worker's own session connection (no second pool connection held while waiting).
+  await c.query('SELECT pg_advisory_lock($1, hashtext($2))', [QA_DUP_NS, a.metrics.sha256]);
+  try {
+    return await decide(row, a);
+  } finally {
+    await c.query('SELECT pg_advisory_unlock($1, hashtext($2))', [QA_DUP_NS, a.metrics.sha256]);
+  }
+}
+
+async function decide(row: Row, a: ReturnType<typeof analyze>): Promise<Decision> {
   const reasons = [...a.reasons];
   let verdict = a.verdict;
   const extra: Check[] = [];

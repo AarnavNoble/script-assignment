@@ -121,6 +121,26 @@ describe('runQaOnce', () => {
     expect(await rec(b.id)).toMatchObject({ status: 'rejected', review_note: 'duplicate_audio' });
   });
 
+  it('identical uploads on different concurrent workers: exactly one per audio survives', async () => {
+    // pairs of identical takes, picked up by different workers at the same time (limit 1 each)
+    for (let i = 0; i < 12; i++) {
+      const wav = encodeWav(speech({ seed: 500 + i, sr: 8000 }));
+      await record(wav);
+      await record(wav);
+    }
+    await Promise.all(Array.from({ length: 6 }, async () => {
+      for (;;) {
+        await runQaOnce({ limit: 1, logger: quiet });
+        const [{ n }] = await q<{ n: number }>(`SELECT count(*)::int n FROM recordings WHERE status = 'pending_checks'`);
+        if (n === 0) break;
+      }
+    }));
+    const live = await q<{ sha: string; n: number }>(
+      `SELECT audio_sha256 sha, count(*) FILTER (WHERE status <> 'rejected')::int n FROM recordings GROUP BY 1`);
+    expect(live).toHaveLength(12);
+    expect(live.every((r) => r.n === 1)).toBe(true);
+  });
+
   it('a rejected recording does not count as the original for duplicates', async () => {
     const wav = encodeWav(speech({ seed: 41 }));
     const a = await record(wav);
