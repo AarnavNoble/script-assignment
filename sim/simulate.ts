@@ -2,6 +2,7 @@
 //
 //   npm run sim -- [--minutes 180] [--online 300] [--lease 600] [--heartbeat 30] [--no-heartbeat]
 //                  [--scale 60] [--seed 42] [--out results] [--port 3201] [--server start|dev|external] [--no-qa] [--claim-order lowest_id|fresh_first]
+//                  [--stall-abs median,sigma,max]   (stall length lognormal in sim-minutes instead of 1.1-2.5x lease)
 //
 // All durations in options are SIMULATED seconds/minutes; they are divided by `scale` for the server.
 // Writes into outDir: run.json, sessions.jsonl, latencies.csv, server.log. Then run `npm run check`.
@@ -14,7 +15,7 @@ import { makeRng, deriveSeed } from './lib/rng';
 import { makeVariants } from './lib/audio';
 import { Api } from './lib/http';
 import { startServer, buildIfNeeded, type ServerMode } from './lib/server';
-import { BEHAVIORS, DEFAULT_MIX, runSession, type Behavior, type SessionCtx, type SessionRecord } from './lib/behaviors';
+import { BEHAVIORS, DEFAULT_MIX, runSession, type Behavior, type SessionCtx, type SessionRecord, type StallDist } from './lib/behaviors';
 
 export const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -39,6 +40,7 @@ export type SimOptions = {
   arrivalGapMin: number;      // mean simulated gap before a freed slot is refilled
   emptyLingerMin: number;     // how long a contributor who hit "empty" stays before leaving
   stallFactor: [number, number];
+  stallAbsMin?: StallDist;    // fixed stall-length distribution in simulated minutes (overrides stallFactor); default off
   mix: Record<Behavior, number>;
   drainMinutes: number;       // after arrivals stop, wait this long (simulated) for sessions to finish
   seed: number;
@@ -53,7 +55,7 @@ export type SimOptions = {
   pgPoolMax: number;          // server's Postgres pool
   reseed: boolean;            // drop + seed the DB and empty the bucket first
   audioSampleRate: number;
-  claimOrder?: 'lowest_id' | 'fresh_first'; // CLAIM_ORDER for the server (lib/config.ts); default lowest_id
+  claimOrder?: 'lowest_id' | 'fresh_first'; // CLAIM_ORDER for the server (lib/config.ts); default fresh_first (the app default)
   qa: boolean;                // run the QA worker (lib/qa.ts) in a child process during the run, drain it at the end
   qaLoops: number;            // concurrent runQaOnce loops in the worker
   qaLimit: number;            // recordings per runQaOnce batch
@@ -119,7 +121,10 @@ export function simEnv(o: SimOptions): Record<string, string> {
     ORPHAN_AGE_SECONDS: s(o.orphanAgeSeconds),
     UPLOAD_URL_SECONDS: String(Math.max(1, Math.round(o.uploadUrlSeconds / o.scale))),
     PG_POOL_MAX: String(o.pgPoolMax),
-    CLAIM_ORDER: o.claimOrder ?? 'lowest_id',
+    CLAIM_ORDER: o.claimOrder ?? 'fresh_first',
+    // lib/qa.ts rejects takes that aren't at an accepted rate (prod: 48000). The sim uploads at
+    // audioSampleRate (1000 Hz by default, to keep ~2 GB per run instead of ~110 GB), so accept that too.
+    ACCEPTED_SAMPLE_RATES: process.env.ACCEPTED_SAMPLE_RATES || `48000,${o.audioSampleRate}`,
   };
 }
 
@@ -222,6 +227,7 @@ export async function runSimulation(partial: Partial<SimOptions> = {}): Promise<
       sessionMedianMin: o.sessionMedianMin,
       sessionSigma: o.sessionSigma,
       stallFactor: o.stallFactor,
+      stallAbsMin: o.stallAbsMin,
       emptyLingerMin: o.emptyLingerMin,
       stopping: () => stopping,
     };
@@ -383,6 +389,7 @@ function parseArgs(argv: string[]): Partial<SimOptions> {
       case '--no-reseed': o.reseed = false; break;
       case '--quiet': o.quiet = true; break;
       case '--no-qa': o.qa = false; break;
+      case '--stall-abs': { const [m, sg, mx] = v.split(',').map(Number); o.stallAbsMin = { median: m, sigma: sg, max: mx }; i++; break; }
       case '--claim-order': o.claimOrder = v as SimOptions['claimOrder']; i++; break;
       case '--qa-loops': num('qaLoops', v); i++; break;
       default: throw new Error(`unknown argument ${a}`);

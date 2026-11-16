@@ -24,6 +24,7 @@ export default defineConfig({
       S3_SECRET: 'minioadmin',
       S3_REGION: 'us-east-1',
       LEASE_SECONDS: '600',
+      CLAIM_ORDER: 'lowest_id', // tests pin the simpler order; fresh_first is tested explicitly
       RELEASE_GRACE_SECONDS: '0', // tests expect release to free at once; soft release is tested explicitly
       ACCEPTED_SAMPLE_RATES: '1000,8000,16000,44100,48000', // synthetic test audio uses low rates
       HEARTBEAT_SECONDS: '30',

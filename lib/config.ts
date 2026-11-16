@@ -18,8 +18,9 @@ export const config = {
   releaseGraceSeconds: () => num('RELEASE_GRACE_SECONDS', 1.5 * num('HEARTBEAT_SECONDS', 30)),
   // sample rates QA accepts (the recorder produces 48 kHz); anything else is a wrong-format take
   acceptedSampleRates: () => (process.env.ACCEPTED_SAMPLE_RATES ?? '48000').split(',').map(Number).filter((n) => n > 0),
-  // claim order: 'lowest_id' (default) or 'fresh_first' (never-claimed scripts before expired leases)
-  claimOrder: () => (process.env.CLAIM_ORDER === 'fresh_first' ? 'fresh_first' : 'lowest_id') as 'lowest_id' | 'fresh_first',
+  // claim order: 'fresh_first' (default: never-held scripts before expired leases, so a stalled contributor
+  // can still submit late; see results/experiments.md) or 'lowest_id' (expired leases re-taken first)
+  claimOrder: () => (process.env.CLAIM_ORDER === 'lowest_id' ? 'lowest_id' : 'fresh_first') as 'lowest_id' | 'fresh_first',
   // pay rate per approved hour of audio, in cents
   payCentsPerHour: () => num('PAY_CENTS_PER_HOUR', 500),
 };

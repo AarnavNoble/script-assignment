@@ -244,7 +244,7 @@ describe('2-10. single-contributor lifecycle', () => {
       const b = claimed(await claim(2, 'en'));
       expect(b.scriptId).not.toBe(a.scriptId); // the expired one is left for its owner a while longer
     } finally {
-      delete process.env.CLAIM_ORDER;
+      process.env.CLAIM_ORDER = 'lowest_id';
     }
     const c = claimed(await claim(3, 'en'));
     expect(c.scriptId).toBe(a.scriptId); // default order: lowest free id, expired lease included
@@ -259,7 +259,7 @@ describe('2-10. single-contributor lifecycle', () => {
     try {
       expect(claimed(await claim(2, 'en')).scriptId).not.toBe(a.scriptId);
     } finally {
-      delete process.env.CLAIM_ORDER;
+      process.env.CLAIM_ORDER = 'lowest_id';
     }
   });
 
