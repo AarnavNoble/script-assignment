@@ -187,7 +187,7 @@ export async function heartbeat(contributorId: number, token: string, opts: Opts
       [token, contributorId, lease],
     );
     if (!r.rowCount) {
-      const ev = await scriptIdFromEvents(token); // so the loss shows up in the script's history
+      const ev = await scriptIdFromEvents(token, c); // so the loss shows up in the script's history
       await logEvent(c, { scriptId: ev?.scriptId, contributorId, token, event: 'lost', language: ev?.language });
       return null;
     }
@@ -238,8 +238,10 @@ async function scriptForToken(contributorId: number, token: string): Promise<{ i
   return r.rowCount ? { id: Number(r.rows[0].id), language: r.rows[0].language } : null;
 }
 
-async function scriptIdFromEvents(token: string): Promise<{ scriptId: number; language: string } | null> {
-  const r = await pool().query(
+// Pass the caller's transaction client when inside tx(): taking a second pool connection while holding
+// one deadlocks the pool once as many requests do it at the same time as the pool has connections.
+async function scriptIdFromEvents(token: string, c: PoolClient | ReturnType<typeof pool> = pool()): Promise<{ scriptId: number; language: string } | null> {
+  const r = await c.query(
     `SELECT script_id, language FROM claim_events WHERE claim_token = $1 AND event = 'claimed' LIMIT 1`,
     [token],
   );

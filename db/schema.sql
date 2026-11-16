@@ -87,6 +87,8 @@ CREATE TABLE claim_events (
 CREATE INDEX claim_events_script ON claim_events (script_id, at);
 CREATE INDEX claim_events_at ON claim_events (at);
 CREATE INDEX claim_events_contributor ON claim_events (contributor_id, at);
+-- token -> script lookup (fenced heartbeats and submits); one 'claimed' row per token
+CREATE INDEX claim_events_token ON claim_events (claim_token) WHERE event = 'claimed';
 
 -- Written by the background job, one row per language per run.
 CREATE TABLE pool_stats (

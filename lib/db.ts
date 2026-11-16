@@ -8,6 +8,8 @@ export function pool(): Pool {
     g.__pgPool = new Pool({
       connectionString: process.env.DATABASE_URL,
       max: Number(process.env.PG_POOL_MAX ?? 20),
+      // fail fast (503 to the client) instead of queueing forever if the pool is exhausted
+      connectionTimeoutMillis: Number(process.env.PG_CONNECT_TIMEOUT_MS ?? 5000),
     });
   }
   return g.__pgPool;

@@ -35,9 +35,9 @@ export function handle(fn: () => Promise<unknown>): Promise<NextResponse> {
     (data) => NextResponse.json(data),
     (e) => {
       if (e instanceof AppError) return NextResponse.json({ code: e.code, message: e.message }, { status: e.status });
-      const err = e as { code?: string };
-      // Postgres unreachable: tell the client to retry with backoff
-      if (err?.code === 'ECONNREFUSED' || err?.code === '57P01') {
+      const err = e as { code?: string; message?: string };
+      // Postgres unreachable or the pool is exhausted: tell the client to retry with backoff
+      if (err?.code === 'ECONNREFUSED' || err?.code === '57P01' || /timeout exceeded when trying to connect/i.test(err?.message ?? '')) {
         return NextResponse.json({ code: 'unavailable', message: 'database unavailable, retry shortly' }, { status: 503 });
       }
       console.error(e);
