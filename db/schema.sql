@@ -34,6 +34,8 @@ CREATE INDEX scripts_fresh ON scripts (language, id) WHERE status = 'available' 
 CREATE INDEX scripts_claimed_expiry ON scripts (lease_expires_at) WHERE status = 'claimed';
 CREATE UNIQUE INDEX scripts_claim_token ON scripts (claim_token) WHERE claim_token IS NOT NULL;
 CREATE INDEX scripts_prev_token ON scripts (prev_token) WHERE prev_token IS NOT NULL;
+-- revive lookup: a contributor's own expired lease that the job (or a release) left with prev_token
+CREATE INDEX scripts_prev_owner ON scripts (prev_claimed_by) WHERE prev_token IS NOT NULL;
 -- a contributor holds at most one claimed script
 CREATE UNIQUE INDEX one_claim_per_contributor ON scripts (claimed_by) WHERE status = 'claimed';
 
