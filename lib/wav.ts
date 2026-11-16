@@ -41,7 +41,8 @@ export function decodeWav(buf: Buffer): Pcm {
     } else if (id === 'data') {
       if (!fmt) throw new Error('data chunk before fmt chunk');
       if (fmt.format !== 1 || fmt.bits !== 16) throw new Error(`unsupported WAV: format ${fmt.format}, ${fmt.bits}-bit`);
-      const end = Math.min(buf.length, body + size);
+      // Streaming encoders may leave the size as 0 (or 0xFFFFFFFF): then the data runs to the end of the file.
+      const end = size === 0 ? buf.length : Math.min(buf.length, body + size);
       const frames = Math.floor((end - body) / (2 * fmt.channels));
       const samples = new Float32Array(frames);
       for (let i = 0; i < frames; i++) {

@@ -20,7 +20,9 @@ export const estPayCents = (durationS: number) => Math.round((durationS / 3600) 
 export async function saveMetrics(recordingId: number, m: Metrics): Promise<void> {
   await pool().query(
     `UPDATE recordings SET duration_s = $2, silence_ratio = $3, clipping_ratio = $4, peak_db = $5,
-       rms_db = $6, audio_sha256 = $7, checks = $8, est_pay_cents = $9
+       rms_db = $6, audio_sha256 = $7, checks = $8,
+       -- a reviewer may have rejected it while QA was running; a rejected take earns nothing
+       est_pay_cents = CASE WHEN status = 'rejected' THEN 0 ELSE $9 END
      WHERE id = $1`,
     [recordingId, m.durationS, m.silenceRatio, m.clippingRatio, m.peakDb, m.rmsDb, m.sha256,
       JSON.stringify(m.checks), estPayCents(m.durationS)],
@@ -66,18 +68,20 @@ export async function reject(recordingId: number, by: By, reason: string) {
   });
 }
 
-/** pending_checks -> needs_review (borderline: a human decides). */
+/** pending_checks -> needs_review (borderline: a human decides). 409 if it was already decided. */
 export async function sendToReview(recordingId: number, reason: string) {
-  const r = await pool().query(
-    `UPDATE recordings SET status = 'needs_review', review_note = $2
-     WHERE id = $1 AND status = 'pending_checks' RETURNING script_id, contributor_id, claim_token`,
-    [recordingId, reason],
-  );
-  if (r.rowCount) {
+  return tx(async (c) => {
+    const r = await c.query(
+      `UPDATE recordings SET status = 'needs_review', review_note = $2
+       WHERE id = $1 AND status = 'pending_checks' RETURNING script_id, contributor_id, claim_token`,
+      [recordingId, reason],
+    );
+    if (!r.rowCount) throw new AppError(409, 'not_reviewable', `recording ${recordingId} is not awaiting checks`);
     const { script_id, contributor_id, claim_token } = r.rows[0];
-    await logEvent(pool(), { scriptId: script_id, contributorId: contributor_id, token: claim_token, event: 'qa_review', detail: { recordingId, reason } });
-  }
-  return { recordingId, status: 'needs_review' as const };
+    const s = await c.query('SELECT language FROM scripts WHERE id = $1', [script_id]);
+    await logEvent(c, { scriptId: script_id, contributorId: contributor_id, token: claim_token, event: 'qa_review', language: s.rows[0]?.language, detail: { recordingId, reason } });
+    return { recordingId, status: 'needs_review' as const };
+  });
 }
 
 /** Weekly payout run: approved -> paid. Returns the total paid per contributor. */
