@@ -7,12 +7,21 @@ import { logEvent } from './assign';
 
 /** 1. Release expired leases. Keeps prev_token so a stalled contributor can still submit late. */
 export async function cleanupExpired(): Promise<number> {
+  // SKIP LOCKED: a row a claim is taking right now is the claim's; skip it. Locking expired rows in a
+  // plain multi-row UPDATE deadlocked with claims (the claim waits on the job's pending index entry for
+  // the same contributor while the job waits on the row the claim picked).
   const r = await pool().query(
-    `UPDATE scripts
-     SET status = 'available', prev_token = claim_token, prev_claimed_by = claimed_by,
+    `WITH expired AS (
+       SELECT id FROM scripts
+       WHERE status = 'claimed' AND lease_expires_at <= now()
+       FOR UPDATE SKIP LOCKED
+     )
+     UPDATE scripts s
+     SET status = 'available', prev_token = s.claim_token, prev_claimed_by = s.claimed_by,
          claimed_by = NULL, claim_token = NULL, lease_expires_at = NULL
-     WHERE status = 'claimed' AND lease_expires_at <= now()
-     RETURNING id, language, prev_token, prev_claimed_by`,
+     FROM expired
+     WHERE s.id = expired.id AND s.status = 'claimed' AND s.lease_expires_at <= now()
+     RETURNING s.id, s.language, s.prev_token, s.prev_claimed_by`,
   );
   for (const row of r.rows) {
     await logEvent(pool(), { scriptId: row.id, contributorId: row.prev_claimed_by, token: row.prev_token, event: 'expired', language: row.language, detail: { by: 'job' } });

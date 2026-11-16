@@ -70,12 +70,14 @@ function toClaim(status: 'claimed' | 'resumed', r: Record<string, unknown>): Cla
 export async function claim(contributorId: number, language?: string, opts: Opts = {}): Promise<ClaimResult> {
   const lease = opts.leaseSeconds ?? config.leaseSeconds();
   // Two tabs of the same contributor can race past the resume check; the loser hits the
-  // one_claim_per_contributor index, and its retry takes the resume path.
+  // one_claim_per_contributor index, and its retry takes the resume path. A deadlock victim (40P01)
+  // is retried too: the whole transaction rolled back, so a retry is safe.
   for (let attempt = 0; ; attempt++) {
     try {
       return await tx((c) => claimOnce(c, contributorId, language, lease));
     } catch (e) {
-      if (attempt < 3 && isUniqueViolation(e, 'one_claim_per_contributor')) continue;
+      const retryable = isUniqueViolation(e, 'one_claim_per_contributor') || (e as { code?: string })?.code === '40P01';
+      if (attempt < 3 && retryable) continue;
       throw e;
     }
   }
@@ -275,6 +277,9 @@ export async function submit(contributorId: number, token: string): Promise<Subm
 
   const s = await scriptForToken(contributorId, token);
   if (!s) {
+    // a concurrent submit of the same token may have committed between our two reads
+    const done = await existingRecording(token);
+    if (done) return done;
     const ev = await scriptIdFromEvents(token);
     if (!ev) throw new AppError(404, 'unknown_claim', 'No such claim.');
     await logEvent(pool(), { scriptId: ev.scriptId, contributorId, token, event: 'rejected', language: ev.language, detail: { reason: 'script_taken' } });
@@ -286,7 +291,12 @@ export async function submit(contributorId: number, token: string): Promise<Subm
   // would let the audio (or its size) change after submit.
   const upload = recordingKey(s.id, token);
   const key = finalKey(s.id, token);
-  if (!(await copyObject(upload, key))) throw new AppError(400, 'upload_missing', 'Upload the recording before submitting.');
+  if (!(await copyObject(upload, key))) {
+    // a concurrent submit of the same token may have just succeeded and deleted the upload
+    const done = await existingRecording(token);
+    if (done) return done;
+    throw new AppError(400, 'upload_missing', 'Upload the recording before submitting.');
+  }
   const obj = (await headObject(key))!;
   if (obj.size <= 0 || obj.size > config.maxUploadBytes()) {
     await deleteObject(key).catch(() => {});
