@@ -99,18 +99,34 @@ async function claimOnce(c: PoolClient, contributorId: number, language: string 
     return toClaim('resumed', r);
   }
 
-  // 2. Drop this contributor's own expired lease so the unique index doesn't block the new claim.
-  //    Keep the old token in prev_token: a late submit is still accepted until someone re-claims.
-  const dropped = await c.query(
-    `UPDATE scripts
-     SET status = 'available', prev_token = claim_token, prev_claimed_by = claimed_by,
-         claimed_by = NULL, claim_token = NULL, lease_expires_at = NULL
-     WHERE claimed_by = $1 AND status = 'claimed' AND lease_expires_at <= now()
-     RETURNING id, language, prev_token`,
-    [contributorId],
+  // 2. Revive this contributor's own expired lease if nobody re-claimed the script, keeping the same token.
+  //    Safe because the token is still on the row only if no one else claimed it in between. Without this,
+  //    a contributor who stalled and comes back would get the script under a new token and their finished
+  //    recording (uploaded under the old token) would be rejected for nothing.
+  //    SKIP LOCKED: if another claimer is taking the row right now, it's theirs; fall through to step 3.
+  const revived = await c.query(
+    `WITH mine AS (
+       SELECT id FROM scripts
+       WHERE (claimed_by = $1 AND status = 'claimed' AND lease_expires_at <= now())
+          OR (prev_claimed_by = $1 AND status = 'available' AND prev_token IS NOT NULL)
+       ORDER BY (status = 'claimed') DESC, claimed_at DESC NULLS LAST
+       LIMIT 1
+       FOR UPDATE SKIP LOCKED
+     )
+     UPDATE scripts s
+     SET status = 'claimed', claimed_by = $1, claim_token = coalesce(s.claim_token, s.prev_token),
+         lease_expires_at = now() + make_interval(secs => $2),
+         prev_token = NULL, prev_claimed_by = NULL
+     FROM mine
+     WHERE s.id = mine.id
+     RETURNING s.id, s.language, s.body, s.claim_token, s.lease_expires_at,
+       EXTRACT(EPOCH FROM (s.lease_expires_at - now()))::float8 AS remaining`,
+    [contributorId, lease],
   );
-  for (const d of dropped.rows) {
-    await logEvent(c, { scriptId: d.id, contributorId, token: d.prev_token, event: 'expired', language: d.language, detail: { by: 'claim' } });
+  if (revived.rowCount) {
+    const r = revived.rows[0];
+    await logEvent(c, { scriptId: r.id, contributorId, token: r.claim_token, event: 'resumed', language: r.language, leaseExpiresAt: r.lease_expires_at, detail: { revived: true } });
+    return toClaim('resumed', r);
   }
 
   // 3. Claim. Expired leases count as free right here, so recovery never waits for the background job.
