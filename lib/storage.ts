@@ -31,7 +31,8 @@ export async function presignPut(key: string, contentType: string, expiresIn: nu
   return getSignedUrl(
     s3(),
     new PutObjectCommand({ Bucket: bucket(), Key: key, ContentType: contentType }),
-    { expiresIn },
+    // sign content-type too, so the URL only accepts the type we said we'd store
+    { expiresIn, signableHeaders: new Set(['content-type']) },
   );
 }
 

@@ -180,7 +180,8 @@ export async function heartbeat(contributorId: number, token: string, opts: Opts
     [token, contributorId, lease],
   );
   if (!r.rowCount) {
-    await logEvent(pool(), { contributorId, token, event: 'lost' });
+    const ev = await scriptIdFromEvents(token); // so the loss shows up in the script's history
+    await logEvent(pool(), { scriptId: ev?.scriptId, contributorId, token, event: 'lost', language: ev?.language });
     throw new AppError(409, 'lease_lost', 'Your session on this script expired. Get a new script to continue.');
   }
   const row = r.rows[0];

@@ -35,7 +35,7 @@ type By = 'qa' | 'reviewer';
 export async function approve(recordingId: number, by: By, note?: string) {
   return tx(async (c) => {
     const r = await c.query(
-      `UPDATE recordings SET status = 'approved', reviewed_at = now(), review_note = $2
+      `UPDATE recordings SET status = 'approved', reviewed_at = now(), review_note = concat_ws(' | ', review_note, $2::text)
        WHERE id = $1 AND status IN ('pending_checks','needs_review')
        RETURNING script_id, contributor_id, claim_token`,
       [recordingId, note ?? null],
@@ -52,7 +52,7 @@ export async function approve(recordingId: number, by: By, note?: string) {
 export async function reject(recordingId: number, by: By, reason: string) {
   return tx(async (c) => {
     const r = await c.query(
-      `UPDATE recordings SET status = 'rejected', reviewed_at = now(), review_note = $2, est_pay_cents = 0
+      `UPDATE recordings SET status = 'rejected', reviewed_at = now(), review_note = concat_ws(' | ', review_note, $2::text), est_pay_cents = 0
        WHERE id = $1 AND status IN ('pending_checks','needs_review')
        RETURNING script_id, contributor_id, claim_token`,
       [recordingId, reason],
