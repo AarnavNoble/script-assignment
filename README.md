@@ -1,36 +1,276 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Script assignment
 
-## Getting Started
+Hand each recording script to exactly one contributor at a time, get abandoned scripts back quickly, and never lose or double-pay a recording. A small but real version: Next.js + Postgres + S3-compatible storage, with a browser recorder, an automatic QA step, an ops view, a test suite, a 300-contributor simulation, and experiments that measure the tradeoffs.
 
-First, run the development server:
+<!-- TLDR:START -->
+**TL;DR**
+- Every claim is a **lease with a fencing token**: one atomic `FOR UPDATE SKIP LOCKED` claim, heartbeats to extend it, and expired leases count as free in the claim query itself.
+- **0 scripts handed out twice** across 7,267 leases in a simulation of 300 contributors closing tabs, refreshing, opening second tabs and stalling on bad networks (plus 96 tests against the real Postgres and storage). Abandoned scripts are claimable again exactly at lease end.
+- **The surprise:** handing out the lowest free id meant a stalled contributor's expired script was re-taken within seconds in busy languages, so **279 of 288 late takes were thrown away**. Handing out never-held scripts first accepts **243 of 275**, cuts lost contributor time by 87%, and records just as much. It's now the default.
+- **Heartbeats matter more than lease length:** at a 10-min lease they cut takes lost to network stalls from 992 to 46. A 10-15 min lease was the cheapest balance of idle scripts vs lost takes.
+- **~57 claims/s** (57x today's traffic) on one Postgres + one Node process before p95 passes 50 ms. The limit is the connection pool, not Postgres.
+- The 4 popular languages run dry at **~2.7 h**; the low-pool alert gives **~2 h** of warning.
+- Demo: [60-second video](DEMO_URL)
+<!-- TLDR:END -->
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+## The problem
+
+Contributors record scripted audio in the browser. Each script should get exactly one good recording, so while someone is recording a script nobody else may get it. But a browser can vanish at any moment (closed laptop, dead battery, lost signal) without telling the server, so a held script must come back on its own. Traffic: ~2,000 registered contributors, ~300 online at once, 16 languages with ~1,200 scripts each, ~80% of contributors in 4 popular languages, ~3-minute recordings (~17 MB as 48 kHz 16-bit WAV). One Postgres, a web server, object storage and a periodic job.
+
+## Design
+
+```mermaid
+flowchart LR
+  B[Browser recorder] -- "claim / heartbeat / release / submit" --> API[Next.js API routes]
+  B -- "PUT audio (presigned URL)" --> S3[(Object storage)]
+  API -- "one SQL statement per step" --> PG[(Postgres)]
+  API -- "presign, copy to final key, HEAD" --> S3
+  JOB[Periodic job, 5 min] --> PG
+  QA[QA workers] --> PG
+  QA -- "read final audio" --> S3
+  OPS[/ops + /stats/] --> API
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+**Core ideas**
+1. **Every claim is a lease** (`lease_expires_at`) with a fresh random **claim token**.
+2. **Claim is one atomic statement** with `FOR UPDATE SKIP LOCKED`: two contributors can never get the same row, and concurrent claimers in a popular language each take a different row instead of queueing on one.
+3. **The browser heartbeats** every 30 s to extend the lease. Tab-close events are unreliable (especially on mobile), so **lease expiry is the real guarantee**; the `pagehide` release only speeds recovery up.
+4. **Expired leases count as free inside the claim query**, so an abandoned script is claimable the moment its lease ends. The 5-minute job is cleanup, stats and alerts only; correctness doesn't depend on it.
+5. **The claim token is a fencing token.** Heartbeat, upload URL and submit must present it, so a stale tab (or a contributor whose script was re-claimed after a long stall) can't touch a script that is now someone else's.
+6. **Audio goes straight to storage** with a presigned PUT (17 MB never passes through the web server). Submit copies it to a key no URL can write, checks the copy, then marks the script submitted.
+7. **The database enforces the invariants:** one claimed script per contributor (partial unique index), one live recording per script (partial unique index on non-rejected recordings), and a `CHECK` tying `status = 'claimed'` to its lease fields.
+8. **One clock:** every time comparison uses Postgres `now()`. The browser's countdown starts from the server's remaining seconds.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+**The claim** (`lib/assign.ts`), after resume/revive checks. By default it first takes a never-held script from a partial index (`status = 'available' AND prev_token IS NULL`), and only then runs this query, which also takes expired leases:
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+```sql
+WITH pick AS (
+  SELECT id, status AS old_status, claim_token AS old_token, claimed_by AS old_by
+  FROM scripts
+  WHERE language = $2
+    AND (status = 'available' OR (status = 'claimed' AND lease_expires_at <= now()))
+  ORDER BY id
+  LIMIT 1
+  FOR UPDATE SKIP LOCKED
+)
+UPDATE scripts s
+SET status = 'claimed', claimed_by = $1, claim_token = gen_random_uuid(),
+    claimed_at = now(), lease_expires_at = now() + make_interval(secs => $3),
+    prev_token = NULL, prev_claimed_by = NULL, times_claimed = s.times_claimed + 1
+FROM pick
+WHERE s.id = pick.id
+RETURNING s.id, s.body, s.claim_token, s.lease_expires_at, pick.old_status, pick.old_token, pick.old_by;
+```
 
-## Learn More
+### Lifecycle
 
-To learn more about Next.js, take a look at the following resources:
+```mermaid
+stateDiagram-v2
+  [*] --> available
+  available --> claimed: claim
+  claimed --> claimed: heartbeat / resume (same token)
+  claimed --> available: lease expired (job) or re-claimed by someone else
+  claimed --> submitted: submit (token must match)
+  available --> submitted: late submit, only if nobody re-claimed it
+  submitted --> approved: QA pass, or reviewer approves
+  submitted --> available: QA or reviewer rejects (the script still needs a good take)
+  approved --> [*]
+```
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+A recording goes `pending_checks → approved | rejected | needs_review`, `needs_review → approved | rejected`, `approved → paid`. Earnings show as **estimated** until approved.
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+### Contributor behaviors it handles
 
-## Deploy on Vercel
+| What happens | Result |
+|---|---|
+| Refresh, or a second tab | Same script, same token (`resumed`), and the lease is extended |
+| Close the tab | `pagehide` sends a beacon. The lease is shortened to a grace of 1.5 heartbeats: another tab or device still open heartbeats it back; otherwise the script frees itself |
+| Tab vanishes (no beacon) | The lease expires and the next claim in that language takes it |
+| Network stall longer than the lease | When the contributor returns: if nobody took the script, they get it back with the **same token** (revive), and the take they already uploaded is still valid; if someone did, the old token is fenced off (409) |
+| Submit retried, or sent twice at once | One recording; every call returns it (idempotent per token) |
+| Upload succeeded but submit failed | Retry submit; leftover uploads are found by the orphan sweep |
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+## Decisions and tradeoffs
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+| Decision | Why | Tradeoff / alternative |
+|---|---|---|
+| Lease + heartbeat | The browser can vanish without telling us | Short lease = fast recovery, but network stalls lose scripts. Measured below |
+| Expired = free in the claim query | No waiting for the 5-min job | Rows can look `claimed` while actually free; the job tidies them |
+| `SKIP LOCKED` | No blocking under contention in popular languages | Not strictly FIFO; fine here |
+| Fencing token | A stale tab can't overwrite a newer claim | One more field to pass around |
+| Resume / revive own lease | Refresh, second tab and "back after a stall" keep the same script and the take they already made | A contributor can't hold two scripts (intended) |
+| Soft release (grace) instead of freeing at once | All of a contributor's tabs/devices share one token; a hard release from one would free a script another is still recording | A politely closed script frees after ~45 s instead of instantly |
+| Accept a late submit if not re-claimed | Don't waste a finished recording (contributor time + pay) | If re-claimed, reject and say so. How often that happens depends on claim order (measured below) |
+| Never-held scripts first (`fresh_first`) | Gives a stalled contributor's expired script time to come back; 87% less contributor time lost | Abandoned scripts wait behind fresh ones (free until a language runs low). Two index scans instead of one |
+| Presigned upload, copy to a final key on submit | Server stays light; the approved audio can't be swapped through a still-valid upload URL | One server-side copy per submit; orphan uploads need a sweep |
+| QA before pay; reviewers only see borderline takes | Clear passes and clear fails don't need a human | Thresholds need tuning on real data |
+| Postgres only (no Redis) | ~1 claim/s; one database is plenty and simpler to run | At ~100x: see Scaling |
+
+**Alternatives considered**
+- *Session-level advisory locks:* the lock dies with the DB connection, not with the browser tab, so it doesn't model "the contributor is still recording".
+- *Redis `SET NX EX`:* fast, but a second system to keep consistent with Postgres; not needed at this traffic.
+- *Pre-assigning scripts to contributors:* wastes scripts on people who never show up.
+- *Relying only on the 5-minute job:* abandoned scripts would sit idle up to 5 min longer than the lease.
+
+**How others do it**
+- *Mozilla Common Voice* doesn't lock at all: many people record the same sentence on purpose (up to 15 clips), with a per-user list of handed-out sentences and upvote/downvote validation. Here each script needs exactly one active recorder, so an exclusive lease is required.
+- *MTurk* and *Label Studio* use the same timeout idea (an assignment duration / task reservation that returns the task when it lapses) and face the same tradeoff: too short duplicates work, too long blocks tasks. That is the lease experiment below.
+- This build: an exclusive lease, heartbeats so the lease can stay short, and a fencing token so a lapsed holder can't write.
+
+## Failure modes
+
+| If... | Then |
+|---|---|
+| The tab vanishes | The lease expires (10 min); the next claim takes the script. No job needed |
+| The app server restarts | Nothing is lost: it's stateless and leases live in Postgres. Clients' next heartbeat succeeds |
+| Postgres is briefly down | Claims and heartbeats get 503; the client retries with backoff. A lease that lapses meanwhile is revived on the next claim if nobody took the script |
+| The DB pool is exhausted | Requests fail fast with 503 (connect timeout) instead of queueing forever |
+| The upload succeeds but submit fails | Submit is idempotent: retry. A never-submitted upload is found by the orphan sweep |
+| Submit succeeds but the response is lost | The retry returns the same recording |
+| The browser's clock is wrong | Only Postgres time is used; the countdown comes from the server's remaining seconds |
+| A QA worker crashes mid-batch | Its rows are held by session advisory locks, which Postgres frees when the connection drops; another worker picks them up |
+| Someone edits a WAV header or swaps audio after submit | Inconsistent headers and unexpected sample rates are rejected; submitted audio lives at a key no URL can write |
+
+## Automatic QA
+
+After submit, QA workers (`lib/qa.ts`, `lib/checks.ts`) decode the WAV and check what speech-data buyers reject: duration, silence ratio, speech level (inaudible / quiet), clipping (runs of clipped samples, so a single loud peak passes), leading/trailing padding, long internal pauses, a cut-off ending, and exact or near-duplicate audio. A clear fail rejects the take and puts the script back in the pool; a borderline take goes to the review queue on `/ops`; everything else is approved with its pay. Several workers can run at once: rows are taken with `SKIP LOCKED` plus a per-row advisory lock, and the duplicate check and the decision run under a per-audio-hash lock so two identical uploads can't both be approved.
+
+Verdicts on synthetic takes (`npx tsx scripts/qa-demo.ts`; the same variants at 1 kHz get identical verdicts):
+
+| Take | Verdict | Why | Duration | Silence | Speech level | Clipped |
+|---|---|---|---|---|---|---|
+| normal | pass | | 11.1 s | 24% | -20 dB | 0% |
+| silent / digital zero / whisper | fail | silent | 10-11 s | 100% | below gate | 0% |
+| hiss, no speech | fail | inaudible | 10.0 s | 0% | -47 dB | 0% |
+| quiet | review | quiet | 11.1 s | 31% | -40 dB | 0% |
+| heavily clipped | fail | distorted | 11.1 s | 24% | -1 dB | 48% |
+| mildly clipped | review | clipping | 11.1 s | 24% | -9 dB | 0.4% |
+| 1.9 s | fail | too_short | 1.9 s | | | |
+| 4.2 s | review | too_short | 4.2 s | | | |
+| 5 s padding each end | review | mostly_silent, padded | 20.0 s | 58% | | |
+| 20 s padding each end | fail | padded | 50.0 s | 83% | | |
+| 8 s pause mid-take | review | long_pause | 19.1 s | 56% | | |
+| cut off mid-word | review | truncated | 10.6 s | 20% | | |
+
+## Results
+
+Full reports: [results/results.md](results/results.md) (simulation + invariant checks), [results/experiments.md](results/experiments.md), [results/loadtest.md](results/loadtest.md). Everything below is measured on a laptop; setups are in the reports.
+
+### Simulation: 300 contributors, 3 simulated hours (seed 42, defaults)
+
+Real HTTP API, time scaled 60x (a 10-min lease is 10 real seconds). Sessions mix seven behaviors: normal (68%), tab vanishes (10%), polite close (5%), refresh (6%), two tabs (4%), network stall longer than the lease (4%), double submit (3%).
+
+| Check | Result |
+|---|---|
+| Scripts handed out twice (overlapping live leases, rebuilt from the audit log) | **0** of 7,267 leases |
+| Scripts with two live recordings | **0** |
+| Late submit accepted after someone else re-claimed / rejected when nobody had | **0 / 0** |
+| Refresh / second tab got the same script back | 465 of 465 / 292 of 292 |
+| Double submit produced exactly one recording | 241 of 241 |
+| Heartbeating sessions that lost their lease | 0 |
+| Vanished tab → script claimable again | 10.0 min after the last heartbeat (= lease) |
+| Late takes after a stall: accepted / rejected | 265 / 25 ($62 of contributor time lost) |
+| QA: approved / rejected (silent, too short, distorted) / review | 6,175 / 776 / 0; every rejection matched the audio it was given |
+| Approved audio | 318 h = $1,586 at $5/approved hour |
+| Popular languages ran out | 2.66-2.68 h; no long-tail language ran out |
+
+![pool over time](results/pool_over_time.png)
+
+### Lease length (cost of idle scripts vs takes lost to network stalls)
+
+Stall lengths are fixed across leases (lognormal, median 3 min), so a shorter lease really does cause more false expiries. Cost = contributor time on rejected takes + abandoned scripts idle while their language had run out, both at $5/h. Lowest-id claim order, 2 seeds, 6 simulated hours per lease:
+
+| Lease | 1 min | 2 min | 5 min | 10 min | 15 min | 10 min, no heartbeat |
+|---|---|---|---|---|---|---|
+| Abandoned script idle (mean) | 1.4 min | 2.4 min | 5.3 min | 10.3 min | 15.3 min | 10.3 min |
+| Takes lost to stalls | 499 | 393 | 158 | 46 | 17 | **992** |
+| Cost per hour | $47.60 | $43.02 | $28.86 | $19.09 | **$17.90** | $185 |
+
+![lease tradeoff](results/lease_tradeoff.png)
+
+With the default never-held-first order, stalls barely lose takes at any lease (10 / 3 / 2 / 0 at 2 / 5 / 10 / 15 min), so a shorter lease wins on recovery: $4.38/h at 5 min vs $8.43 at 10 min (one seed). I kept the default at 10 min: browsers throttle timers in background tabs, so heartbeats can arrive late, and the extra margin costs about $4 per hour.
+
+### Claim order
+
+Same seed, QA off. v1 only reordered rows still marked `claimed`; the 5-min job turned expired leases back into ordinary `available` rows, so it barely helped. v2 also held back rows the job had reset, but sorted every free row per claim (37.6 ms on 100k scripts per language). v3 (shipped) does the same with two index scans (0.09 ms).
+
+| | lowest id | never-held first v1 | v2 | **v3 (default)** |
+|---|---|---|---|---|
+| Late takes accepted | 9 / 288 | 41 / 279 | 246 / 278 | **243 / 275** |
+| Contributor time lost per 3 h | $466 | $412 | $58 | **$63** |
+| Recordings | 6,487 | 6,525 | 6,532 | 6,499 |
+
+### Load
+
+Open-loop, real time, one Node process, a 20-connection pool:
+
+| Claims/s | 1 | 10 | 57 | 75 | 75, pool of 50 | 91 (100x) |
+|---|---|---|---|---|---|---|
+| Claim p95 | 24 ms | 16 ms | **19 ms** | 1,111 ms | 37 ms | 5,099 ms (21 errors) |
+
+All claims in one hot language: p95 22-31 ms. Directly in SQL with 32 concurrent claimers, `SKIP LOCKED` did 4,142 claims/s at p95 8 ms vs 1,836/s at p95 43 ms with plain `FOR UPDATE`.
+
+### Forecast
+
+The job forecasts `hours_left = available / claims per hour` per language and alerts under 2 h. The alert fired 1.93-2.06 h before each popular language ran out. QA rejections refill the pool, so the forecast errs slightly early; without them it errs late (1.5-1.7 h of warning), so if adding scripts takes longer than that, raise the threshold.
+
+![forecast](results/forecast.png)
+
+### Bugs the tests, simulation and an independent review found (all fixed)
+- A pool deadlock: failed heartbeats took a second connection while holding one; enough at once froze the server.
+- A Postgres deadlock between the expiry job and a claim for the same contributor (found by the 1-minute-lease run).
+- A resume that didn't extend the lease, so a returning contributor could lose the script before their first heartbeat.
+- A hard release from one device freeing a script another device was still recording (now a soft release).
+- Two identical uploads both approved and paid (QA duplicate check raced across workers).
+- A WAV header edited to a lower sample rate reading as 6x the duration, and pay.
+
+## Scaling
+
+Today: ~1 claim/s and ~10 heartbeats/s. Measured: ~57 claims/s plus ~620 heartbeats/s at claim p95 19 ms. At 75/s the 20-connection pool saturates (p95 1.1 s) while Postgres averages ~1 active backend: each claim holds a connection across ~7 round trips while the one Node process is busy. A pool of 50 brought p95 back to 37 ms.
+
+What breaks first, and what I'd change:
+1. **Round trips per claim.** Fold the claim into one SQL function (or one statement) so a connection is held for one round trip, and run more app processes behind PgBouncer.
+2. **Heartbeat writes**: at 100x that's ~1,000 row updates/s plus an audit-log insert each. Fix: log heartbeats only on state changes (or sample them), and put PgBouncer in front so many app servers share few connections.
+3. **The audit log grows fastest.** Partition `claim_events` by day and drop or archive old partitions.
+4. **Hot languages.** `SKIP LOCKED` keeps claims from queueing, but at very high rates partition `scripts` by language, or pre-fetch a small batch of candidate ids per language into Redis and keep Postgres as the source of truth for the lease.
+5. **QA CPU.** Workers already scale horizontally; move them off the web tier.
+
+## What I'd do next
+- Quota/priority-based script selection (coverage targets per language, speaker diversity)
+- Resumable multipart uploads for bad connections (only useful above ~5 MB parts, so for long takes)
+- Speech-to-text vs script (WER) as a QA check, so "doesn't follow the script" is caught automatically
+- Per-contributor abandonment cool-downs (the job already lists high abandoners)
+- A payout ledger (append-only), instead of a `paid` status on the recording
+- A `qa_attempts` column so a recording that keeps failing on a storage error goes to review instead of being retried forever
+
+## Run it
+
+```bash
+cp .env.example .env            # set PG_PORT/DATABASE_URL if 5432 is taken
+docker compose up -d            # Postgres 16 + MinIO + bucket
+npm install
+npm run seed                    # 2,000 contributors, 16 languages x 1,200 scripts
+npm test                        # 96 tests against the real Postgres + MinIO
+npm run dev                     # http://localhost:3000/record, /stats, /ops
+npm run jobs                    # the periodic job (cleanup, stats, alerts)
+npm run qa                      # the QA worker
+npm run sim && npm run check    # 300-contributor simulation -> results/results.md
+npm run experiments             # lease sweep, claim order, forecast -> results/experiments.md
+```
+
+The contributor id comes from an `x-contributor-id` header (or a picker on `/record`) as a stand-in for real auth. `scripts/smoke.sh` walks the API with curl.
+
+## Layout
+
+```
+db/schema.sql           tables, invariant indexes, audit log
+lib/assign.ts           claim / heartbeat / release / upload-url / submit
+lib/jobs.ts             periodic job: cleanup, pool stats, forecast + alerts, orphan + abandonment sweeps
+lib/review.ts           recording transitions: approve, reject, review, pay
+lib/checks.ts, qa.ts    automatic audio checks + the QA worker loop
+app/api/**              HTTP routes; app/record, app/stats, app/ops pages
+public/wav-worklet.js   AudioWorklet that captures raw PCM for the 48 kHz WAV
+tests/**                96 tests, real Postgres + MinIO
+sim/**                  simulation, invariant checker, experiments, load test
+results/**              generated reports and charts
+```

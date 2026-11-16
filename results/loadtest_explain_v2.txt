@@ -1,0 +1,217 @@
+==== table at rest: 1.6M scripts, no live leases ====
+
+-- claim step 3 (pick + update), CLAIM_ORDER=lowest_id, language 'en'
+Update on scripts s  (cost=3.06..11.11 rows=1 width=234) (actual time=0.066..0.068 rows=1 loops=1)
+  Buffers: shared hit=27
+  CTE pick
+    ->  Limit  (cost=0.42..2.63 rows=1 width=43) (actual time=0.010..0.010 rows=1 loops=1)
+          Buffers: shared hit=6
+          ->  LockRows  (cost=0.42..137849.21 rows=62510 width=43) (actual time=0.009..0.010 rows=1 loops=1)
+                Buffers: shared hit=6
+                ->  Index Scan using scripts_free on scripts  (cost=0.42..137224.11 rows=62510 width=43) (actual time=0.007..0.007 rows=1 loops=1)
+                      Index Cond: (language = 'en'::text)
+                      Filter: ((status = 'available'::text) OR ((status = 'claimed'::text) AND (lease_expires_at <= now())))
+                      Buffers: shared hit=5
+  ->  Nested Loop  (cost=0.43..8.48 rows=1 width=234) (actual time=0.024..0.024 rows=1 loops=1)
+        Buffers: shared hit=11
+        ->  CTE Scan on pick  (cost=0.00..0.02 rows=1 width=144) (actual time=0.012..0.013 rows=1 loops=1)
+              Buffers: shared hit=6
+        ->  Index Scan using scripts_pkey on scripts s  (cost=0.43..8.45 rows=1 width=18) (actual time=0.002..0.002 rows=1 loops=1)
+              Index Cond: (id = pick.id)
+              Buffers: shared hit=5
+Planning:
+  Buffers: shared hit=5
+Planning Time: 0.084 ms
+Trigger for constraint scripts_claimed_by_fkey: time=0.029 calls=1
+Execution Time: 0.113 ms
+
+-- same, CLAIM_ORDER=fresh_first
+Update on scripts s  (cost=45544.68..45552.73 rows=1 width=234) (actual time=22.952..22.953 rows=1 loops=1)
+  Buffers: shared hit=2168, temp read=274 written=275
+  CTE pick
+    ->  Limit  (cost=45544.24..45544.26 rows=1 width=44) (actual time=22.857..22.858 rows=1 loops=1)
+          Buffers: shared hit=2147, temp read=274 written=275
+          ->  LockRows  (cost=45544.24..46325.62 rows=62510 width=44) (actual time=22.856..22.857 rows=1 loops=1)
+                Buffers: shared hit=2147, temp read=274 written=275
+                ->  Sort  (cost=45544.24..45700.52 rows=62510 width=44) (actual time=22.850..22.851 rows=1 loops=1)
+                      Sort Key: (((scripts.status <> 'available'::text) OR (scripts.prev_token IS NOT NULL))), scripts.id
+                      Sort Method: external merge  Disk: 2192kB
+                      Buffers: shared hit=2146, temp read=274 written=275
+                      ->  Bitmap Heap Scan on scripts  (cost=2044.88..45231.69 rows=62510 width=44) (actual time=2.338..12.564 rows=62000 loops=1)
+                            Recheck Cond: ((language = 'en'::text) AND (status = ANY ('{available,claimed}'::text[])))
+                            Filter: ((status = 'available'::text) OR ((status = 'claimed'::text) AND (lease_expires_at <= now())))
+                            Heap Blocks: exact=1760
+                            Buffers: shared hit=2146
+                            ->  Bitmap Index Scan on scripts_free  (cost=0.00..2029.25 rows=62510 width=0) (actual time=2.219..2.219 rows=62003 loops=1)
+                                  Index Cond: (language = 'en'::text)
+                                  Buffers: shared hit=386
+  ->  Nested Loop  (cost=0.43..8.48 rows=1 width=234) (actual time=22.888..22.889 rows=1 loops=1)
+        Buffers: shared hit=2152, temp read=274 written=275
+        ->  CTE Scan on pick  (cost=0.00..0.02 rows=1 width=144) (actual time=22.867..22.867 rows=1 loops=1)
+              Buffers: shared hit=2147, temp read=274 written=275
+        ->  Index Scan using scripts_pkey on scripts s  (cost=0.43..8.45 rows=1 width=18) (actual time=0.005..0.005 rows=1 loops=1)
+              Index Cond: (id = pick.id)
+              Buffers: shared hit=5
+Planning:
+  Buffers: shared hit=2
+Planning Time: 0.110 ms
+Trigger for constraint scripts_claimed_by_fkey: time=0.071 calls=1
+Execution Time: 23.273 ms
+
+-- claim step 2 (revive own expired lease)
+Update on scripts s  (cost=12.77..20.81 rows=1 width=118) (actual time=0.011..0.012 rows=0 loops=1)
+  Buffers: shared hit=3
+  CTE mine
+    ->  Limit  (cost=12.32..12.34 rows=1 width=23) (actual time=0.010..0.011 rows=0 loops=1)
+          Buffers: shared hit=3
+          ->  LockRows  (cost=12.32..12.34 rows=1 width=23) (actual time=0.010..0.010 rows=0 loops=1)
+                Buffers: shared hit=3
+                ->  Sort  (cost=12.32..12.33 rows=1 width=23) (actual time=0.009..0.010 rows=0 loops=1)
+                      Sort Key: ((scripts.status = 'claimed'::text)) DESC, scripts.claimed_at DESC NULLS LAST
+                      Sort Method: quicksort  Memory: 25kB
+                      Buffers: shared hit=3
+                      ->  Bitmap Heap Scan on scripts  (cost=8.29..12.31 rows=1 width=23) (actual time=0.007..0.007 rows=0 loops=1)
+                            Recheck Cond: (((claimed_by = 300001) AND (status = 'claimed'::text)) OR (prev_token IS NOT NULL))
+                            Filter: (((claimed_by = 300001) AND (status = 'claimed'::text) AND (lease_expires_at <= now())) OR ((prev_claimed_by = 300001) AND (status = 'available'::text) AND (prev_token IS NOT NULL)))
+                            Heap Blocks: exact=1
+                            Buffers: shared hit=3
+                            ->  BitmapOr  (cost=8.29..8.29 rows=1 width=0) (actual time=0.005..0.005 rows=0 loops=1)
+                                  Buffers: shared hit=2
+                                  ->  Bitmap Index Scan on one_claim_per_contributor  (cost=0.00..4.15 rows=1 width=0) (actual time=0.004..0.004 rows=1 loops=1)
+                                        Index Cond: (claimed_by = 300001)
+                                        Buffers: shared hit=1
+                                  ->  Bitmap Index Scan on scripts_prev_token  (cost=0.00..4.13 rows=1 width=0) (actual time=0.000..0.001 rows=0 loops=1)
+                                        Index Cond: (prev_token IS NOT NULL)
+                                        Buffers: shared hit=1
+  ->  Nested Loop  (cost=0.43..8.47 rows=1 width=118) (actual time=0.011..0.011 rows=0 loops=1)
+        Buffers: shared hit=3
+        ->  CTE Scan on mine  (cost=0.00..0.02 rows=1 width=40) (actual time=0.010..0.010 rows=0 loops=1)
+              Buffers: shared hit=3
+        ->  Index Scan using scripts_pkey on scripts s  (cost=0.43..8.45 rows=1 width=46) (never executed)
+              Index Cond: (id = mine.id)
+Planning:
+  Buffers: shared hit=2
+Planning Time: 0.154 ms
+Execution Time: 0.040 ms
+
+-- claim step 1 (resume live lease)
+Update on scripts  (cost=0.14..8.18 rows=1 width=14) (actual time=0.002..0.002 rows=0 loops=1)
+  Buffers: shared hit=1
+  ->  Index Scan using one_claim_per_contributor on scripts  (cost=0.14..8.18 rows=1 width=14) (actual time=0.001..0.001 rows=0 loops=1)
+        Index Cond: (claimed_by = 300001)
+        Filter: ((status = 'claimed'::text) AND (lease_expires_at > now()))
+        Buffers: shared hit=1
+Planning:
+  Buffers: shared hit=1
+Planning Time: 0.031 ms
+Execution Time: 0.010 ms
+
+==== table with 33994 live leases, all in en (the 100x lease count concentrated in the probed language: worst case) ====
+
+-- claim step 3 (pick + update), CLAIM_ORDER=lowest_id, language 'en'
+Update on scripts s  (cost=3.14..11.19 rows=1 width=234) (actual time=8.045..8.048 rows=1 loops=1)
+  Buffers: shared hit=4697
+  CTE pick
+    ->  Limit  (cost=0.42..2.71 rows=1 width=43) (actual time=7.942..7.942 rows=1 loops=1)
+          Buffers: shared hit=4675
+          ->  LockRows  (cost=0.42..136793.51 rows=59814 width=43) (actual time=7.941..7.941 rows=1 loops=1)
+                Buffers: shared hit=4675
+                ->  Index Scan using scripts_free on scripts  (cost=0.42..136195.37 rows=59814 width=43) (actual time=7.936..7.936 rows=1 loops=1)
+                      Index Cond: (language = 'en'::text)
+                      Filter: ((status = 'available'::text) OR ((status = 'claimed'::text) AND (lease_expires_at <= now())))
+                      Rows Removed by Filter: 33994
+                      Buffers: shared hit=4674
+  ->  Nested Loop  (cost=0.43..8.48 rows=1 width=234) (actual time=7.981..7.982 rows=1 loops=1)
+        Buffers: shared hit=4679
+        ->  CTE Scan on pick  (cost=0.00..0.02 rows=1 width=144) (actual time=7.946..7.947 rows=1 loops=1)
+              Buffers: shared hit=4675
+        ->  Index Scan using scripts_pkey on scripts s  (cost=0.43..8.45 rows=1 width=18) (actual time=0.007..0.007 rows=1 loops=1)
+              Index Cond: (id = pick.id)
+              Buffers: shared hit=4
+Planning:
+  Buffers: shared hit=2
+Planning Time: 0.160 ms
+Trigger for constraint scripts_claimed_by_fkey: time=0.108 calls=1
+Execution Time: 8.180 ms
+
+-- same, CLAIM_ORDER=fresh_first
+Update on scripts s  (cost=45573.62..45581.67 rows=1 width=234) (actual time=16.368..16.371 rows=1 loops=1)
+  Buffers: shared hit=2123
+  CTE pick
+    ->  Limit  (cost=45573.18..45573.19 rows=1 width=44) (actual time=16.031..16.032 rows=1 loops=1)
+          Buffers: shared hit=2101
+          ->  LockRows  (cost=45573.18..46320.85 rows=59814 width=44) (actual time=16.030..16.031 rows=1 loops=1)
+                Buffers: shared hit=2101
+                ->  Sort  (cost=45573.18..45722.71 rows=59814 width=44) (actual time=15.980..15.981 rows=1 loops=1)
+                      Sort Key: (((scripts.status <> 'available'::text) OR (scripts.prev_token IS NOT NULL))), scripts.id
+                      Sort Method: quicksort  Memory: 2300kB
+                      Buffers: shared hit=2100
+                      ->  Bitmap Heap Scan on scripts  (cost=2062.96..45274.11 rows=59814 width=44) (actual time=7.027..12.963 rows=28006 loops=1)
+                            Recheck Cond: ((language = 'en'::text) AND (status = ANY ('{available,claimed}'::text[])))
+                            Filter: ((status = 'available'::text) OR ((status = 'claimed'::text) AND (lease_expires_at <= now())))
+                            Rows Removed by Filter: 33994
+                            Heap Blocks: exact=1591
+                            Buffers: shared hit=2100
+                            ->  Bitmap Index Scan on scripts_free  (cost=0.00..2048.01 rows=61811 width=0) (actual time=2.522..2.522 rows=62003 loops=1)
+                                  Index Cond: (language = 'en'::text)
+                                  Buffers: shared hit=509
+  ->  Nested Loop  (cost=0.43..8.48 rows=1 width=234) (actual time=16.243..16.244 rows=1 loops=1)
+        Buffers: shared hit=2105
+        ->  CTE Scan on pick  (cost=0.00..0.02 rows=1 width=144) (actual time=16.042..16.043 rows=1 loops=1)
+              Buffers: shared hit=2101
+        ->  Index Scan using scripts_pkey on scripts s  (cost=0.43..8.45 rows=1 width=18) (actual time=0.044..0.044 rows=1 loops=1)
+              Index Cond: (id = pick.id)
+              Buffers: shared hit=4
+Planning:
+  Buffers: shared hit=2
+Planning Time: 0.169 ms
+Trigger for constraint scripts_claimed_by_fkey: time=0.058 calls=1
+Execution Time: 16.468 ms
+
+-- claim step 2 (revive own expired lease)
+Update on scripts s  (cost=12.91..20.95 rows=1 width=118) (actual time=0.012..0.013 rows=0 loops=1)
+  Buffers: shared hit=4
+  CTE mine
+    ->  Limit  (cost=12.47..12.48 rows=1 width=23) (actual time=0.011..0.011 rows=0 loops=1)
+          Buffers: shared hit=4
+          ->  LockRows  (cost=12.47..12.48 rows=1 width=23) (actual time=0.010..0.010 rows=0 loops=1)
+                Buffers: shared hit=4
+                ->  Sort  (cost=12.47..12.47 rows=1 width=23) (actual time=0.010..0.010 rows=0 loops=1)
+                      Sort Key: ((scripts.status = 'claimed'::text)) DESC, scripts.claimed_at DESC NULLS LAST
+                      Sort Method: quicksort  Memory: 25kB
+                      Buffers: shared hit=4
+                      ->  Bitmap Heap Scan on scripts  (cost=8.43..12.46 rows=1 width=23) (actual time=0.008..0.008 rows=0 loops=1)
+                            Recheck Cond: (((claimed_by = 300001) AND (status = 'claimed'::text)) OR (prev_token IS NOT NULL))
+                            Filter: (((claimed_by = 300001) AND (status = 'claimed'::text) AND (lease_expires_at <= now())) OR ((prev_claimed_by = 300001) AND (status = 'available'::text) AND (prev_token IS NOT NULL)))
+                            Heap Blocks: exact=1
+                            Buffers: shared hit=4
+                            ->  BitmapOr  (cost=8.43..8.43 rows=1 width=0) (actual time=0.006..0.006 rows=0 loops=1)
+                                  Buffers: shared hit=3
+                                  ->  Bitmap Index Scan on one_claim_per_contributor  (cost=0.00..4.29 rows=1 width=0) (actual time=0.005..0.005 rows=1 loops=1)
+                                        Index Cond: (claimed_by = 300001)
+                                        Buffers: shared hit=2
+                                  ->  Bitmap Index Scan on scripts_prev_token  (cost=0.00..4.13 rows=1 width=0) (actual time=0.000..0.000 rows=0 loops=1)
+                                        Index Cond: (prev_token IS NOT NULL)
+                                        Buffers: shared hit=1
+  ->  Nested Loop  (cost=0.43..8.47 rows=1 width=118) (actual time=0.011..0.012 rows=0 loops=1)
+        Buffers: shared hit=4
+        ->  CTE Scan on mine  (cost=0.00..0.02 rows=1 width=40) (actual time=0.011..0.011 rows=0 loops=1)
+              Buffers: shared hit=4
+        ->  Index Scan using scripts_pkey on scripts s  (cost=0.43..8.45 rows=1 width=46) (never executed)
+              Index Cond: (id = mine.id)
+Planning:
+  Buffers: shared hit=2
+Planning Time: 0.114 ms
+Execution Time: 0.035 ms
+
+-- claim step 1 (resume live lease)
+Update on scripts  (cost=0.29..8.32 rows=1 width=14) (actual time=0.003..0.003 rows=0 loops=1)
+  Buffers: shared hit=2
+  ->  Index Scan using one_claim_per_contributor on scripts  (cost=0.29..8.32 rows=1 width=14) (actual time=0.003..0.003 rows=0 loops=1)
+        Index Cond: (claimed_by = 300001)
+        Filter: ((status = 'claimed'::text) AND (lease_expires_at > now()))
+        Buffers: shared hit=2
+Planning:
+  Buffers: shared hit=1
+Planning Time: 0.037 ms
+Execution Time: 0.009 ms

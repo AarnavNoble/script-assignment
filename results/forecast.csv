@@ -1,0 +1,9 @@
+source,language,firstLowPoolH,ranOutH,warningH,returned,forecastAtAlertH,errAtAlertH,mae1hH
+baseline (QA on),en,0.8338,2.765,1.9312,150,2.6329,-0.1321,0.099
+baseline (QA on),es,0.7511,2.7875,2.0364,149,2.6486,-0.1389,0.1104
+baseline (QA on),hi,0.7512,2.807,2.0558,158,2.6635,-0.1435,0.1079
+baseline (QA on),pt,0.7516,2.7383,1.9866,160,2.6942,-0.0441,0.106
+order_lowest_id (QA off),en,0.7502,2.2799,1.5297,0,2.5373,0.2575,0.0351
+order_lowest_id (QA off),es,0.7502,2.385,1.6348,0,2.5449,0.1599,0.0183
+order_lowest_id (QA off),hi,0.7502,2.435,1.6848,0,2.4526,0.0176,0.0357
+order_lowest_id (QA off),pt,0.7503,2.4813,1.731,0,2.561,0.0797,0.0792

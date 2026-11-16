@@ -1,0 +1,367 @@
+{
+  "handedOutTwice": 0,
+  "handedOutTwiceExamples": [],
+  "rawTimestampOverlaps": 0,
+  "releaseLogSkew": {
+    "n": 0,
+    "maxMs": 0,
+    "claimInsertedAfterRelease": 0
+  },
+  "lateAcceptAfterReclaim": 0,
+  "rejectedWithoutReclaim": 0,
+  "qa": {
+    "byStatus": {
+      "approved": 6175,
+      "rejected": 776
+    },
+    "reasons": {
+      "rejected": {
+        "distorted": 194,
+        "silent": 348,
+        "too_short": 234
+      },
+      "needs_review": {}
+    },
+    "byAudioKind": {
+      "normal": {
+        "approved": 6175
+      },
+      "clipped": {
+        "rejected": 194
+      },
+      "silent": {
+        "rejected": 348
+      },
+      "short": {
+        "rejected": 234
+      }
+    },
+    "approvedHours": 318.0177777777778,
+    "approvedPayoutDollars": 1586.2,
+    "reviewHours": 0,
+    "reviewPayoutDollars": 0,
+    "rejectedHours": 27.243038194444445,
+    "pending": 0,
+    "decisionLagRealS": {
+      "n": 6951,
+      "mean": 1.21610912429866,
+      "p50": 0.928161,
+      "p95": 3.371249,
+      "max": 5.311879
+    },
+    "returnedToPool": 776,
+    "returnedByLang": {
+      "fr": 19,
+      "tr": 16,
+      "id": 16,
+      "en": 137,
+      "hi": 132,
+      "ar": 14,
+      "pt": 164,
+      "vi": 12,
+      "ja": 16,
+      "ko": 16,
+      "pl": 18,
+      "it": 17,
+      "es": 148,
+      "sw": 9,
+      "bn": 19,
+      "de": 23
+    },
+    "rerecordedScripts": 666
+  },
+  "recordedTwice": 0,
+  "consistencyIssues": {
+    "live_recording_on_unsubmitted_script": 0,
+    "submitted_script_without_recording": 0,
+    "recording_token_not_claimed_for_script": 0,
+    "token_claimed_twice": 0
+  },
+  "intervals": 7267,
+  "recovery": {
+    "vanish": {
+      "n": 154,
+      "censored": 29,
+      "claimable": {
+        "n": 154,
+        "mean": 9.989422077922098,
+        "p50": 9.992,
+        "p95": 9.999,
+        "max": 9.999
+      },
+      "reclaimed": {
+        "n": 125,
+        "mean": 32.06556800000001,
+        "p50": 20.438,
+        "p95": 85.383,
+        "max": 125.155
+      },
+      "idleScriptMinutes": 5143.8579999999965,
+      "ownerReturned": 574,
+      "vanishedTotal": 728
+    },
+    "polite": {
+      "n": 90,
+      "censored": 13,
+      "claimable": {
+        "n": 90,
+        "mean": 0.7398666666666666,
+        "p50": 0.743,
+        "p95": 0.749,
+        "max": 0.749
+      },
+      "reclaimed": {
+        "n": 77,
+        "mean": 33.627350649350646,
+        "p50": 22.358,
+        "p95": 109.142,
+        "max": 136.169
+      }
+    }
+  },
+  "late": {
+    "accepted": 265,
+    "rejected": 25,
+    "minutesLost": 742.7699999999998,
+    "dollarsLost": 61.89749999999998,
+    "byGroup": {
+      "popular": {
+        "accepted": 195,
+        "rejected": 25
+      },
+      "tail": {
+        "accepted": 70,
+        "rejected": 0
+      }
+    },
+    "falseExpiries": 25,
+    "liveLeaseLost": 0,
+    "resumedThenLost": 0,
+    "resumedSessions": 957
+  },
+  "pool": {
+    "runOut": [
+      {
+        "language": "en",
+        "popular": true,
+        "firstEmptyMin": 160.974,
+        "firstZeroSnapshotMin": 165.105,
+        "scripts": 1200,
+        "doneAtEnd": 1200
+      },
+      {
+        "language": "es",
+        "popular": true,
+        "firstEmptyMin": 159.384,
+        "firstZeroSnapshotMin": 170.072,
+        "scripts": 1200,
+        "doneAtEnd": 1197
+      },
+      {
+        "language": "hi",
+        "popular": true,
+        "firstEmptyMin": 160.014,
+        "firstZeroSnapshotMin": 160.232,
+        "scripts": 1200,
+        "doneAtEnd": 1198
+      },
+      {
+        "language": "pt",
+        "popular": true,
+        "firstEmptyMin": 160.553,
+        "firstZeroSnapshotMin": 165.134,
+        "scripts": 1200,
+        "doneAtEnd": 1198
+      },
+      {
+        "language": "ar",
+        "popular": false,
+        "firstEmptyMin": null,
+        "firstZeroSnapshotMin": null,
+        "scripts": 1200,
+        "doneAtEnd": 120
+      },
+      {
+        "language": "bn",
+        "popular": false,
+        "firstEmptyMin": null,
+        "firstZeroSnapshotMin": null,
+        "scripts": 1200,
+        "doneAtEnd": 122
+      },
+      {
+        "language": "de",
+        "popular": false,
+        "firstEmptyMin": null,
+        "firstZeroSnapshotMin": null,
+        "scripts": 1200,
+        "doneAtEnd": 109
+      },
+      {
+        "language": "fr",
+        "popular": false,
+        "firstEmptyMin": null,
+        "firstZeroSnapshotMin": null,
+        "scripts": 1200,
+        "doneAtEnd": 139
+      },
+      {
+        "language": "id",
+        "popular": false,
+        "firstEmptyMin": null,
+        "firstZeroSnapshotMin": null,
+        "scripts": 1200,
+        "doneAtEnd": 106
+      },
+      {
+        "language": "it",
+        "popular": false,
+        "firstEmptyMin": null,
+        "firstZeroSnapshotMin": null,
+        "scripts": 1200,
+        "doneAtEnd": 102
+      },
+      {
+        "language": "ja",
+        "popular": false,
+        "firstEmptyMin": null,
+        "firstZeroSnapshotMin": null,
+        "scripts": 1200,
+        "doneAtEnd": 123
+      },
+      {
+        "language": "ko",
+        "popular": false,
+        "firstEmptyMin": null,
+        "firstZeroSnapshotMin": null,
+        "scripts": 1200,
+        "doneAtEnd": 103
+      },
+      {
+        "language": "pl",
+        "popular": false,
+        "firstEmptyMin": null,
+        "firstZeroSnapshotMin": null,
+        "scripts": 1200,
+        "doneAtEnd": 121
+      },
+      {
+        "language": "sw",
+        "popular": false,
+        "firstEmptyMin": null,
+        "firstZeroSnapshotMin": null,
+        "scripts": 1200,
+        "doneAtEnd": 117
+      },
+      {
+        "language": "tr",
+        "popular": false,
+        "firstEmptyMin": null,
+        "firstZeroSnapshotMin": null,
+        "scripts": 1200,
+        "doneAtEnd": 118
+      },
+      {
+        "language": "vi",
+        "popular": false,
+        "firstEmptyMin": null,
+        "firstZeroSnapshotMin": null,
+        "scripts": 1200,
+        "doneAtEnd": 102
+      }
+    ],
+    "emptyHits": 1242,
+    "contributorsHitEmpty": 918,
+    "contributorsHitEmptyByLang": {
+      "en": 221,
+      "es": 221,
+      "hi": 247,
+      "pt": 229
+    }
+  },
+  "throughput": {
+    "simMinutes": 180.005,
+    "realSeconds": 180.005,
+    "claims": 7267,
+    "claimsPerRealSec": 40.37110080275548,
+    "claimsPerSimMin": 40.37110080275548,
+    "peakClaimsPerSimMin": 68.6,
+    "recordings": 6175,
+    "recordingsPerSimHour": 2024.9437515624566,
+    "audioHours": 318.0177777777778,
+    "payoutDollars": 1586.2,
+    "approvedHours": 318.0177777777778,
+    "nominalGB": 109.9072157,
+    "uploadedGB": 2.2899997
+  },
+  "behaviors": {
+    "sessions": 9466,
+    "refreshResumedSameScript": "465/465",
+    "twoTabsSameScript": "292/292",
+    "twoTabsSecondTabGot409AfterSubmit": "292/292",
+    "doubleSubmitOneRecording": "241/241",
+    "sessionsWithErrors": 0,
+    "outcome_released": 413,
+    "outcome_submitted": 6686,
+    "outcome_late_accepted": 265,
+    "outcome_vanished": 835,
+    "outcome_rejected": 25,
+    "outcome_empty": 1242
+  },
+  "latency": [
+    {
+      "endpoint": "heartbeat",
+      "n": 80181,
+      "p50": 32.24,
+      "p95": 179.9,
+      "p99": 374.49,
+      "max": 732.82,
+      "errors": 0
+    },
+    {
+      "endpoint": "claim",
+      "n": 10223,
+      "p50": 33.97,
+      "p95": 179.57,
+      "p99": 367.03,
+      "max": 623.27,
+      "errors": 0
+    },
+    {
+      "endpoint": "submit",
+      "n": 7458,
+      "p50": 89.8,
+      "p95": 360.75,
+      "p99": 535.73,
+      "max": 1026.9,
+      "errors": 0
+    },
+    {
+      "endpoint": "upload_url",
+      "n": 6976,
+      "p50": 13.67,
+      "p95": 132.46,
+      "p99": 292.6,
+      "max": 698.22,
+      "errors": 0
+    },
+    {
+      "endpoint": "put",
+      "n": 6952,
+      "p50": 23.48,
+      "p95": 67.4,
+      "p99": 130.45,
+      "max": 562.68,
+      "errors": 0
+    },
+    {
+      "endpoint": "release",
+      "n": 413,
+      "p50": 31.48,
+      "p95": 152.55,
+      "p99": 192.65,
+      "max": 258.19,
+      "errors": 0
+    }
+  ]
+}

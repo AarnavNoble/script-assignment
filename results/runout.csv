@@ -1,0 +1,17 @@
+language,popular,scripts,recorded_at_end,first_empty_claim_sim_min,first_zero_snapshot_sim_min,contributors_hit_empty,qa_rejected_returned
+en,1,1200,1200,161.0,165.1,221,137
+es,1,1200,1197,159.4,170.1,221,148
+hi,1,1200,1198,160.0,160.2,247,132
+pt,1,1200,1198,160.6,165.1,229,164
+ar,0,1200,120,n/a,n/a,0,14
+bn,0,1200,122,n/a,n/a,0,19
+de,0,1200,109,n/a,n/a,0,23
+fr,0,1200,139,n/a,n/a,0,19
+id,0,1200,106,n/a,n/a,0,16
+it,0,1200,102,n/a,n/a,0,17
+ja,0,1200,123,n/a,n/a,0,16
+ko,0,1200,103,n/a,n/a,0,16
+pl,0,1200,121,n/a,n/a,0,18
+sw,0,1200,117,n/a,n/a,0,9
+tr,0,1200,118,n/a,n/a,0,16
+vi,0,1200,102,n/a,n/a,0,12
