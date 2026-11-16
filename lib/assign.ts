@@ -191,12 +191,16 @@ export async function heartbeat(contributorId: number, token: string, opts: Opts
   };
 }
 
-/** Best-effort give-back (tab close). The lease expiry is the real guarantee; this just makes recovery instant. */
+/**
+ * Best-effort give-back (tab close). The lease expiry is the real guarantee; this just makes recovery instant.
+ * The token moves to prev_token: pagehide also fires on a refresh, and the reloaded page's claim then
+ * revives the same script and token unless someone else took it in between.
+ */
 export async function release(contributorId: number, token: string): Promise<{ released: boolean }> {
   const r = await pool().query(
     `UPDATE scripts
-     SET status = 'available', claimed_by = NULL, claim_token = NULL, lease_expires_at = NULL,
-         prev_token = NULL, prev_claimed_by = NULL
+     SET status = 'available', prev_token = claim_token, prev_claimed_by = claimed_by,
+         claimed_by = NULL, claim_token = NULL, lease_expires_at = NULL
      WHERE claim_token = $1 AND claimed_by = $2 AND status = 'claimed'
      RETURNING id, language`,
     [token, contributorId],

@@ -219,6 +219,15 @@ describe('2-10. single-contributor lifecycle', () => {
     expect(await release(1, a.token)).toEqual({ released: false });
   });
 
+  it('8c. refresh = release then claim again: the same contributor gets the same script and token back', async () => {
+    const a = claimed(await claim(1, 'en'));
+    await upload(a.scriptId, a.token);
+    expect(await release(1, a.token)).toEqual({ released: true });
+    const b = claimed(await claim(1, 'en'));
+    expect(b).toMatchObject({ status: 'resumed', scriptId: a.scriptId, token: a.token });
+    await expect(submit(1, a.token)).resolves.toMatchObject({ status: 'submitted', late: false });
+  });
+
   it('8b. release by a different contributor is a no-op', async () => {
     const a = claimed(await claim(1, 'en'));
     expect(await release(2, a.token)).toEqual({ released: false });
