@@ -78,7 +78,9 @@ CREATE TABLE claim_events (
   -- |qa_approved|qa_rejected|qa_review|review_approved|review_rejected|paid
   event            text NOT NULL,
   language         text,
-  at               timestamptz NOT NULL DEFAULT now(),
+  -- clock_timestamp(), not now(): the event is stamped when written (after its row change), not when its
+  -- transaction began, so the log never shows a claim before the release that freed the row
+  at               timestamptz NOT NULL DEFAULT clock_timestamp(),
   lease_expires_at timestamptz,
   detail           jsonb
 );
