@@ -138,7 +138,8 @@ async function claimOnce(c: PoolClient, contributorId: number, language: string 
   //    Order: 'lowest_id' takes expired leases as soon as they're the lowest free id (fastest recovery);
   //    'fresh_first' takes never-claimed rows first, giving a stalled contributor more time to submit
   //    late before their script is re-claimed. Measured in sim/experiments.ts.
-  const order = config.claimOrder() === 'fresh_first' ? `(status <> 'available'), id` : 'id';
+  //    A row the job reset after expiry still carries prev_token, so it counts as "someone's" too.
+  const order = config.claimOrder() === 'fresh_first' ? `(status <> 'available' OR prev_token IS NOT NULL), id` : 'id';
   const got = await c.query(
     `WITH pick AS (
        SELECT id, status AS old_status, claim_token AS old_token, claimed_by AS old_by

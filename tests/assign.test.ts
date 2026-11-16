@@ -250,6 +250,19 @@ describe('2-10. single-contributor lifecycle', () => {
     expect(c.scriptId).toBe(a.scriptId); // default order: lowest free id, expired lease included
   });
 
+  it('3c. fresh_first also protects a lease the job already reset (token kept in prev_token)', async () => {
+    const { cleanupExpired } = await import('@/lib/jobs');
+    const a = claimed(await claim(1, 'en', { leaseSeconds: 1 }));
+    await sleep(1500);
+    await cleanupExpired();
+    process.env.CLAIM_ORDER = 'fresh_first';
+    try {
+      expect(claimed(await claim(2, 'en')).scriptId).not.toBe(a.scriptId);
+    } finally {
+      delete process.env.CLAIM_ORDER;
+    }
+  });
+
   it('8d. soft release: another device still heartbeating keeps the script; otherwise it frees after the grace', async () => {
     await reset({ en: 1 }, 20);
     const a = claimed(await claim(1, 'en'));
