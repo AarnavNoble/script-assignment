@@ -16,14 +16,12 @@ export type Metrics = {
 
 export const estPayCents = (durationS: number) => Math.round((durationS / 3600) * config.payCentsPerHour());
 
-/** Store QA metrics and the estimated pay. Doesn't change status. */
+/** Store QA metrics and the estimated pay. Doesn't change status; a no-op once the take was decided. */
 export async function saveMetrics(recordingId: number, m: Metrics): Promise<void> {
   await pool().query(
     `UPDATE recordings SET duration_s = $2, silence_ratio = $3, clipping_ratio = $4, peak_db = $5,
-       rms_db = $6, audio_sha256 = $7, checks = $8,
-       -- a reviewer may have rejected it while QA was running; a rejected take earns nothing
-       est_pay_cents = CASE WHEN status = 'rejected' THEN 0 ELSE $9 END
-     WHERE id = $1`,
+       rms_db = $6, audio_sha256 = $7, checks = $8, est_pay_cents = $9
+     WHERE id = $1 AND status IN ('pending_checks','needs_review')`,
     [recordingId, m.durationS, m.silenceRatio, m.clippingRatio, m.peakDb, m.rmsDb, m.sha256,
       JSON.stringify(m.checks), estPayCents(m.durationS)],
   );
@@ -31,14 +29,17 @@ export async function saveMetrics(recordingId: number, m: Metrics): Promise<void
 
 type By = 'qa' | 'reviewer';
 
-/** pending_checks|needs_review -> approved; the script is done. */
+/**
+ * QA: pending_checks -> approved. Reviewer: needs_review -> approved (only after QA measured it, so the
+ * pay is known; approving a take QA hasn't seen would pay nothing and skip the checks).
+ */
 export async function approve(recordingId: number, by: By, note?: string) {
   return tx(async (c) => {
     const r = await c.query(
       `UPDATE recordings SET status = 'approved', reviewed_at = now(), review_note = concat_ws(' | ', review_note, $2::text)
-       WHERE id = $1 AND status IN ('pending_checks','needs_review')
+       WHERE id = $1 AND status = $3 AND est_pay_cents IS NOT NULL
        RETURNING script_id, contributor_id, claim_token`,
-      [recordingId, note ?? null],
+      [recordingId, note ?? null, by === 'qa' ? 'pending_checks' : 'needs_review'],
     );
     if (!r.rowCount) throw new AppError(409, 'not_reviewable', `recording ${recordingId} is not awaiting a decision`);
     const { script_id, contributor_id, claim_token } = r.rows[0];
