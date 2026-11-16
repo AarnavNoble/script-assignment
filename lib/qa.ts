@@ -22,6 +22,7 @@ import { decodeWav } from './wav';
 import { analyze, expectedDurationS, type Check } from './checks';
 import { saveMetrics, approve, reject, sendToReview } from './review';
 import { AppError } from './errors';
+import { config } from './config';
 
 /** Advisory-lock namespace (first key of the two-int form) so we never collide with other users. */
 export const QA_LOCK_NS = 0x51a; // "QA"
@@ -126,6 +127,13 @@ async function processOne(row: Row, c: PoolClient): Promise<Decision> {
     if (!(pcm.sampleRate > 0)) throw new Error(`bad sample rate ${pcm.sampleRate}`);
   } catch (e) {
     await reject(row.id, 'qa', `unreadable_audio: ${(e as Error).message}`);
+    return 'rejected';
+  }
+  // Duration (and so pay) is samples / sample rate, so only the format the recorder produces is accepted.
+  // Otherwise relabeling 48 kHz audio as 8 kHz would read as 6x longer.
+  const rates = config.acceptedSampleRates();
+  if (!rates.includes(pcm.sampleRate) || (pcm.channels ?? 1) !== 1) {
+    await reject(row.id, 'qa', `wrong_format: ${pcm.sampleRate} Hz, ${pcm.channels ?? 1} ch (expected mono at ${rates.join('/')} Hz)`);
     return 'rejected';
   }
 

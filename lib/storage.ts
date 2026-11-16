@@ -1,5 +1,6 @@
 import {
   S3Client, PutObjectCommand, HeadObjectCommand, GetObjectCommand, ListObjectsV2Command,
+  CopyObjectCommand, DeleteObjectCommand,
 } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 
@@ -22,8 +23,30 @@ export function s3(): S3Client {
 
 export const bucket = () => process.env.S3_BUCKET ?? 'recordings';
 
+/** Where the browser uploads (writable through a presigned URL until it expires). */
 export function recordingKey(scriptId: number | string, token: string): string {
   return `recordings/${scriptId}/${token}.wav`;
+}
+
+/** Where a submitted recording lives. No URL can write here, so the approved audio can't be swapped later. */
+export function finalKey(scriptId: number | string, token: string): string {
+  return `final/${scriptId}/${token}.wav`;
+}
+
+/** Server-side copy. Returns false if the source doesn't exist. */
+export async function copyObject(from: string, to: string): Promise<boolean> {
+  try {
+    await s3().send(new CopyObjectCommand({ Bucket: bucket(), Key: to, CopySource: `${bucket()}/${from}` }));
+    return true;
+  } catch (e) {
+    const err = e as { name?: string; Code?: string; $metadata?: { httpStatusCode?: number } };
+    if (err.name === 'NoSuchKey' || err.Code === 'NoSuchKey' || err.$metadata?.httpStatusCode === 404) return false;
+    throw e;
+  }
+}
+
+export async function deleteObject(key: string): Promise<void> {
+  await s3().send(new DeleteObjectCommand({ Bucket: bucket(), Key: key }));
 }
 
 /** Presigned PUT: the browser uploads straight to storage; the audio never passes through our server. */

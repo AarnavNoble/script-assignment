@@ -24,6 +24,8 @@ export default defineConfig({
       S3_SECRET: 'minioadmin',
       S3_REGION: 'us-east-1',
       LEASE_SECONDS: '600',
+      RELEASE_GRACE_SECONDS: '0', // tests expect release to free at once; soft release is tested explicitly
+      ACCEPTED_SAMPLE_RATES: '1000,8000,16000,44100,48000', // synthetic test audio uses low rates
       HEARTBEAT_SECONDS: '30',
       FORECAST_WINDOW_SECONDS: '3600',
       LOW_POOL_ALERT_HOURS: '2',

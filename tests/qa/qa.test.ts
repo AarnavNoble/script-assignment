@@ -5,7 +5,7 @@ import { DeleteObjectCommand } from '@aws-sdk/client-s3';
 import { seed } from '@/db/seed';
 import { pool, closePool } from '@/lib/db';
 import { claim, submit } from '@/lib/assign';
-import { putObject, recordingKey, s3, bucket } from '@/lib/storage';
+import { putObject, recordingKey, finalKey, s3, bucket } from '@/lib/storage';
 import { encodeWav } from '@/lib/wav';
 import { runQaOnce, QA_LOCK_NS } from '@/lib/qa';
 import { speech, noiseOnly } from './synth';
@@ -28,14 +28,14 @@ const q = async <T = Rec>(sql: string, p: unknown[] = []) => (await pool().query
 const quiet = { error: () => {}, warn: () => {} };
 
 let nextContributor = 1;
-/** claim -> upload -> submit, returns the recording id and its key */
+/** claim -> upload -> submit, returns the recording id and its stored (final) key */
 async function record(body: Buffer): Promise<{ id: number; key: string; scriptId: number }> {
   const c = await claim(nextContributor++, 'en');
   if (c.status === 'empty') throw new Error('pool empty');
-  const key = recordingKey(c.scriptId, c.token);
-  await putObject(key, body);
+  await putObject(recordingKey(c.scriptId, c.token), body);
   const s = await submit(nextContributor - 1, c.token);
-  return { id: s.recordingId, key, scriptId: c.scriptId };
+  // submit copies the upload to an immutable final key; QA reads that one
+  return { id: s.recordingId, key: finalKey(c.scriptId, c.token), scriptId: c.scriptId };
 }
 
 const rec = async (id: number) => (await q('SELECT * FROM recordings WHERE id = $1', [id]))[0];
@@ -151,6 +151,18 @@ describe('runQaOnce', () => {
     const b = await record(wav);
     await runQaOnce({ limit: 10, logger: quiet });
     expect((await rec(b.id)).status).toBe('approved');
+  });
+
+  it('rejects a sample rate the recorder does not produce, and a header whose rate was edited', async () => {
+    const odd = await record(encodeWav(speech({ seed: 71, sr: 22050 })));
+    const edited = encodeWav(speech({ seed: 72, sr: 48000 }));
+    edited.writeUInt32LE(8000, 24); // claim 8 kHz (6x the duration, 6x the pay) without fixing byte rate
+    const fake = await record(edited);
+    await runQaOnce({ limit: 10, logger: quiet });
+    expect((await rec(odd.id)).status).toBe('rejected');
+    expect((await rec(odd.id)).review_note).toMatch(/^wrong_format/);
+    expect((await rec(fake.id)).status).toBe('rejected');
+    expect((await rec(fake.id)).review_note).toMatch(/inconsistent WAV header/);
   });
 
   it('a transient storage error leaves the row pending and does not stop the batch', async () => {

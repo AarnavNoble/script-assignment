@@ -250,6 +250,33 @@ describe('2-10. single-contributor lifecycle', () => {
     expect(c.scriptId).toBe(a.scriptId); // default order: lowest free id, expired lease included
   });
 
+  it('8d. soft release: another device still heartbeating keeps the script; otherwise it frees after the grace', async () => {
+    await reset({ en: 1 }, 20);
+    const a = claimed(await claim(1, 'en'));
+    // device A closes its tab (grace 1 s); device B, same contributor and token, is still recording
+    expect(await release(1, a.token, { graceSeconds: 1 })).toEqual({ released: true });
+    expect((await claim(2, 'en')).status).toBe('empty'); // not handed out during the grace
+    await heartbeat(1, a.token); // B's heartbeat restores the full lease
+    await sleep(1300);
+    expect((await claim(2, 'en')).status).toBe('empty');
+    await expect(submit(1, a.token)).rejects.toMatchObject({ code: 'upload_missing' }); // still B's to submit
+    // nobody left: release again and the script frees itself after the grace
+    await release(1, a.token, { graceSeconds: 1 });
+    await sleep(1300);
+    expect(claimed(await claim(2, 'en')).scriptId).toBe(a.scriptId);
+  });
+
+  it('8e. submit freezes the audio: a PUT to the upload URL after submit does not change the stored recording', async () => {
+    const { finalKey, putObject, recordingKey, headObject } = await import('@/lib/storage');
+    const a = claimed(await claim(1, 'en'));
+    await upload(a.scriptId, a.token, 4096);
+    await submit(1, a.token);
+    const [rec] = await q<{ s3_key: string; size_bytes: string }>('SELECT s3_key, size_bytes FROM recordings');
+    expect(rec.s3_key).toBe(finalKey(a.scriptId, a.token));
+    await putObject(recordingKey(a.scriptId, a.token), Buffer.alloc(9999, 1)); // the URL is still valid for a while
+    expect(await headObject(rec.s3_key)).toEqual({ size: 4096 });
+  });
+
   it('8b. release by a different contributor is a no-op', async () => {
     const a = claimed(await claim(1, 'en'));
     expect(await release(2, a.token)).toEqual({ released: false });

@@ -1,6 +1,6 @@
 // Minimal 16-bit PCM mono WAV encode/decode. 3 min at 48 kHz = 17.3 MB, the size in the exercise.
 
-export type Pcm = { sampleRate: number; samples: Float32Array }; // samples in [-1, 1]
+export type Pcm = { sampleRate: number; samples: Float32Array; channels?: number }; // samples in [-1, 1]
 
 export function encodeWav({ sampleRate, samples }: Pcm): Buffer {
   const dataBytes = samples.length * 2;
@@ -31,16 +31,22 @@ export function decodeWav(buf: Buffer): Pcm {
     throw new Error('not a RIFF/WAVE file');
   }
   let off = 12;
-  let fmt: { channels: number; sampleRate: number; bits: number; format: number } | null = null;
+  let fmt: { channels: number; sampleRate: number; bits: number; format: number; byteRate: number; blockAlign: number } | null = null;
   while (off + 8 <= buf.length) {
     const id = buf.toString('ascii', off, off + 4);
     const size = buf.readUInt32LE(off + 4);
     const body = off + 8;
     if (id === 'fmt ') {
-      fmt = { format: buf.readUInt16LE(body), channels: buf.readUInt16LE(body + 2), sampleRate: buf.readUInt32LE(body + 4), bits: buf.readUInt16LE(body + 14) };
+      fmt = { format: buf.readUInt16LE(body), channels: buf.readUInt16LE(body + 2), sampleRate: buf.readUInt32LE(body + 4),
+        byteRate: buf.readUInt32LE(body + 8), blockAlign: buf.readUInt16LE(body + 12), bits: buf.readUInt16LE(body + 14) };
     } else if (id === 'data') {
       if (!fmt) throw new Error('data chunk before fmt chunk');
       if (fmt.format !== 1 || fmt.bits !== 16) throw new Error(`unsupported WAV: format ${fmt.format}, ${fmt.bits}-bit`);
+      if (fmt.channels < 1) throw new Error('WAV has 0 channels');
+      // the header's fields must agree; an edited sample rate alone would change the measured duration (and pay)
+      if (fmt.blockAlign !== fmt.channels * 2 || fmt.byteRate !== fmt.sampleRate * fmt.blockAlign) {
+        throw new Error(`inconsistent WAV header: ${fmt.sampleRate} Hz x ${fmt.channels} ch but byte rate ${fmt.byteRate}, block align ${fmt.blockAlign}`);
+      }
       // Streaming encoders may leave the size as 0 (or 0xFFFFFFFF): then the data runs to the end of the file.
       const end = size === 0 ? buf.length : Math.min(buf.length, body + size);
       const frames = Math.floor((end - body) / (2 * fmt.channels));
@@ -50,7 +56,7 @@ export function decodeWav(buf: Buffer): Pcm {
         for (let ch = 0; ch < fmt.channels; ch++) sum += buf.readInt16LE(body + (i * fmt.channels + ch) * 2) / 0x8000;
         samples[i] = sum / fmt.channels;
       }
-      return { sampleRate: fmt.sampleRate, samples };
+      return { sampleRate: fmt.sampleRate, samples, channels: fmt.channels };
     }
     off = body + size + (size % 2); // chunks are word-aligned
   }

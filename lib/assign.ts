@@ -2,7 +2,7 @@ import type { PoolClient } from 'pg';
 import { pool, tx, isUniqueViolation } from './db';
 import { config } from './config';
 import { AppError } from './errors';
-import { headObject, presignPut, recordingKey } from './storage';
+import { copyObject, deleteObject, finalKey, headObject, presignPut, recordingKey } from './storage';
 
 export type Claim = {
   status: 'claimed' | 'resumed';
@@ -203,22 +203,24 @@ export async function heartbeat(contributorId: number, token: string, opts: Opts
 }
 
 /**
- * Best-effort give-back (tab close). The lease expiry is the real guarantee; this just makes recovery instant.
- * The token moves to prev_token: pagehide also fires on a refresh, and the reloaded page's claim then
- * revives the same script and token unless someone else took it in between.
+ * Best-effort give-back (tab close). The lease expiry is the real guarantee; this just speeds up recovery.
+ * Soft: it shortens the lease to RELEASE_GRACE_SECONDS instead of freeing the script at once. Every client
+ * of a contributor shares one token (refresh, second tab, second device), so a hard release from one would
+ * free a script another is still recording. With a grace of ~1.5 heartbeats, any client still open
+ * heartbeats the lease back to full length; a refresh resumes it; otherwise it frees itself.
  */
-export async function release(contributorId: number, token: string): Promise<{ released: boolean }> {
+export async function release(contributorId: number, token: string, opts: { graceSeconds?: number } = {}): Promise<{ released: boolean }> {
+  const grace = opts.graceSeconds ?? config.releaseGraceSeconds();
   return tx(async (c) => {
     const r = await c.query(
-      `UPDATE scripts
-       SET status = 'available', prev_token = claim_token, prev_claimed_by = claimed_by,
-           claimed_by = NULL, claim_token = NULL, lease_expires_at = NULL
-       WHERE claim_token = $1 AND claimed_by = $2 AND status = 'claimed'
-       RETURNING id, language`,
-      [token, contributorId],
+      `UPDATE scripts SET lease_expires_at = LEAST(lease_expires_at, now() + make_interval(secs => $3))
+       WHERE claim_token = $1 AND claimed_by = $2 AND status = 'claimed' AND lease_expires_at > now()
+       RETURNING id, language, lease_expires_at`,
+      [token, contributorId, grace],
     );
     if (r.rowCount) {
-      await logEvent(c, { scriptId: r.rows[0].id, contributorId, token, event: 'released', language: r.rows[0].language });
+      const row = r.rows[0];
+      await logEvent(c, { scriptId: row.id, contributorId, token, event: 'released', language: row.language, leaseExpiresAt: row.lease_expires_at, detail: { graceSeconds: grace } });
     }
     return { released: !!r.rowCount };
   });
@@ -279,11 +281,15 @@ export async function submit(contributorId: number, token: string): Promise<Subm
     throw new AppError(409, 'script_taken', 'Your session expired and this script was given to someone else. Your recording was not used.');
   }
 
-  // Check storage before taking any row lock: you can't submit audio that doesn't exist.
-  const key = recordingKey(s.id, token);
-  const obj = await headObject(key);
-  if (!obj) throw new AppError(400, 'upload_missing', 'Upload the recording before submitting.');
+  // Freeze the upload before taking any row lock: copy it to a key no presigned URL can write, then check
+  // the copy. The upload URL stays valid for a while, so checking the upload itself and using it later
+  // would let the audio (or its size) change after submit.
+  const upload = recordingKey(s.id, token);
+  const key = finalKey(s.id, token);
+  if (!(await copyObject(upload, key))) throw new AppError(400, 'upload_missing', 'Upload the recording before submitting.');
+  const obj = (await headObject(key))!;
   if (obj.size <= 0 || obj.size > config.maxUploadBytes()) {
+    await deleteObject(key).catch(() => {});
     throw new AppError(400, 'upload_invalid', `Recording size ${obj.size} bytes is out of range.`);
   }
 
@@ -317,10 +323,14 @@ export async function submit(contributorId: number, token: string): Promise<Subm
     await logEvent(c, { scriptId: row.id, contributorId, token, event: row.late ? 'late_accepted' : 'submitted', language: row.language, detail: { recordingId: Number(rec.rows[0].id) } });
     return { status: row.late ? 'late_accepted' : 'submitted', recordingId: Number(rec.rows[0].id), scriptId: Number(row.id), late: row.late, duplicate: false } as SubmitResult;
   });
-  if (result) return result;
+  if (result) {
+    await deleteObject(upload).catch(() => {}); // best effort; the orphan sweep catches leftovers
+    return result;
+  }
 
   const raced = await existingRecording(token);
-  if (raced) return raced;
+  if (raced) return raced; // a concurrent retry won; its recording uses the same final key, so keep it
+  await deleteObject(key).catch(() => {});
   await logEvent(pool(), { scriptId: s.id, contributorId, token, event: 'rejected', language: s.language, detail: { reason: 'script_taken' } });
   throw new AppError(409, 'script_taken', 'Your session expired and this script was given to someone else. Your recording was not used.');
 }
