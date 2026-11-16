@@ -11,6 +11,8 @@ export const DEFAULT_MIX: Record<Behavior, number> = {
   normal: 68, vanish: 10, polite_release: 5, refresh: 6, two_tabs: 4, stall: 4, double_submit: 3,
 };
 
+export type StallDist = { median: number; sigma: number; max: number };
+
 export type SessionCtx = {
   api: Api;
   rng: Rng;
@@ -23,6 +25,8 @@ export type SessionCtx = {
   sessionMedianMin: number;
   sessionSigma: number;
   stallFactor: [number, number]; // stall length as a multiple of the lease
+  /** If set, stall length is lognormal in absolute simulated minutes (independent of the lease) instead of stallFactor x lease. */
+  stallAbsMin?: StallDist;
   emptyLingerMin: number;
   stopping: () => boolean; // hard stop: abandon in-flight work
 };
@@ -44,6 +48,7 @@ export type SessionRecord = {
   releasedAt?: number;
   stallStart?: number;
   stallEnd?: number;
+  stallMin?: number; // planned stall length, simulated minutes
   heartbeatsOk?: number;
   lastHeartbeatOk?: number;
   resumeSameToken?: boolean; // refresh + two tabs
@@ -127,6 +132,10 @@ export async function runSession(ctx: SessionCtx, rec: SessionRecord): Promise<S
   const cutFrac = rng.uniform(0.1, 0.9);
   const stallFrac = rng.uniform(0.1, 0.5);
   const stallMul = rng.uniform(ctx.stallFactor[0], ctx.stallFactor[1]);
+  // drawn only when the option is on, so the default RNG stream (and the baseline) is unchanged
+  const stallSimMin = ctx.stallAbsMin
+    ? Math.min(ctx.stallAbsMin.max, rng.lognormal(ctx.stallAbsMin.median, ctx.stallAbsMin.sigma))
+    : stallMul * ctx.leaseSimMin;
 
   const c = await api.claim(who);
   if (c.status !== 200) {
@@ -222,7 +231,8 @@ export async function runSession(ctx: SessionCtx, rec: SessionRecord): Promise<S
       const stallAt = t0 + stallFrac * planned * min;
       if (!(await heartbeatUntil(ctx, rec, who, token, stallAt))) { rec.outcome = ctx.stopping() ? 'cut' : 'lost'; return rec; }
       rec.stallStart = Date.now();
-      await sleep(stallMul * ctx.leaseSimMin * min); // network gone: no heartbeats, still recording
+      rec.stallMin = stallSimMin;
+      await sleep(stallSimMin * min); // network gone: no heartbeats, still recording
       rec.stallEnd = Date.now();
       if (ctx.stopping()) { rec.outcome = 'cut'; return rec; }
       settle(rec, (await uploadAndSubmit(ctx, rec, who, token))[0]);

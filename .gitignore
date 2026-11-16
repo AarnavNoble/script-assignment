@@ -53,3 +53,4 @@ results/**/latencies.csv
 results/**/sessions.jsonl
 results/**/server.log
 results/**/*.log
+results/exp-runs/

@@ -124,8 +124,11 @@ export async function checkRun(partial: Partial<CheckOptions> = {}): Promise<Che
       WITH tok AS (
         SELECT script_id, claim_token,
           min(at) FILTER (WHERE event = 'claimed') AS start,
-          max(lease_expires_at) FILTER (WHERE event IN ('claimed','heartbeat','resumed')) AS lease_end,
-          max(at) FILTER (WHERE event IN ('released','submitted','late_accepted')) AS last_cut,
+          -- lease end as of the token's latest lease-setting event. A soft release (lib/assign.ts release(),
+          -- 'released' with lease_expires_at = now() + grace) shortens it; a later heartbeat/resume extends it.
+          (array_agg(lease_expires_at ORDER BY id DESC) FILTER (WHERE event IN ('claimed','heartbeat','resumed','released') AND lease_expires_at IS NOT NULL))[1] AS lease_end,
+          -- a hard release (older code: 'released' without lease_expires_at) freed the row at once, so it cuts the interval
+          max(at) FILTER (WHERE event IN ('submitted','late_accepted') OR (event = 'released' AND lease_expires_at IS NULL)) AS last_cut,
           max(at) FILTER (WHERE event = 'resumed' AND detail->>'revived' = 'true') AS last_revived,
           max(at) FILTER (WHERE event = 'released') AS released,
           max(id) FILTER (WHERE event = 'released') AS released_id,
@@ -202,7 +205,7 @@ export async function checkRun(partial: Partial<CheckOptions> = {}): Promise<Che
     // ---------- per-token facts (3, 4) ----------
     type Tok = {
       claim_token: string; script_id: number; language: string; contributor_id: number; claimed_at: Date; last_alive: Date; lease_end: Date;
-      released_at: Date | null; submitted_at: Date | null; rejected_at: Date | null; late_ok: boolean; next_claim: Date | null;
+      released_at: Date | null; release_lease_end: Date | null; submitted_at: Date | null; rejected_at: Date | null; late_ok: boolean; next_claim: Date | null;
     };
     const toks = await q<Tok>(`
       WITH tok AS (
@@ -211,6 +214,8 @@ export async function checkRun(partial: Partial<CheckOptions> = {}): Promise<Che
           max(at) FILTER (WHERE event IN ('claimed','heartbeat','resumed')) AS last_alive,
           max(lease_expires_at) FILTER (WHERE event IN ('claimed','heartbeat','resumed')) AS lease_end,
           min(at) FILTER (WHERE event = 'released') AS released_at,
+          -- soft release: the shortened lease end it set (NULL for an older hard release = free at once)
+          (array_agg(lease_expires_at ORDER BY id) FILTER (WHERE event = 'released'))[1] AS release_lease_end,
           min(at) FILTER (WHERE event IN ('submitted','late_accepted')) AS submitted_at,
           min(at) FILTER (WHERE event = 'rejected') AS rejected_at,
           bool_or(event = 'late_accepted') AS late_ok
@@ -245,9 +250,11 @@ export async function checkRun(partial: Partial<CheckOptions> = {}): Promise<Che
       recoveryRows.push(`vanish,${t.claim_token},${t.script_id},${t.language},${f(simMin(t.last_alive))},${f(c)},${t.next_claim ? f(simDur(t.last_alive, t.next_claim)) : ''}`);
     }
     for (const t of polite) {
-      pClaim.push(0); // status is 'available' the moment the release commits
+      // soft release: claimable when the grace lease ends; older hard release: at once
+      const c = t.release_lease_end ? Math.max(0, simDur(t.released_at!, t.release_lease_end)) : 0;
+      pClaim.push(c);
       if (t.next_claim) pRe.push(simDur(t.released_at!, t.next_claim)); else pCens++;
-      recoveryRows.push(`polite,${t.claim_token},${t.script_id},${t.language},${f(simMin(t.released_at!))},0,${t.next_claim ? f(simDur(t.released_at!, t.next_claim)) : ''}`);
+      recoveryRows.push(`polite,${t.claim_token},${t.script_id},${t.language},${f(simMin(t.released_at!))},${f(c)},${t.next_claim ? f(simDur(t.released_at!, t.next_claim)) : ''}`);
     }
 
     // 4. late submits: submits that arrived after the token's lease had ended
@@ -480,7 +487,7 @@ function renderMarkdown(r: CheckResult, ctx: { scale: number; sessionsLogged: bo
   L.push('## Summary', '');
   L.push(`- **Setup:** ${o.online ?? '?'} contributors online (of ${o.contributors ?? '?'} registered), 16 languages x ${o.scriptsPerLanguage ?? '?'} scripts, ${f(t.simMinutes / 60, 1)} simulated hours against the real HTTP API (Next.js \`${(r.run as any)?.options?.server ?? '?'}\` + Postgres + MinIO). Time scale ${ctx.scale}x: lease ${o.leaseSeconds ?? '?'} s, heartbeat ${o.heartbeat === false ? 'OFF' : (o.heartbeatSeconds ?? '?') + ' s'}, job every ${o.jobIntervalSeconds ?? '?'} s (all simulated), claim order \`${o.claimOrder ?? 'lowest_id'}\`. Seed ${o.seed ?? '?'}.`);
   L.push(`- **Handed out twice:** ${pass(r.handedOutTwice)} overlapping leases across ${fi(r.intervals)} lease intervals${r.releaseLogSkew.n ? ` (${r.releaseLogSkew.n} raw timestamp overlaps of at most ${f(r.releaseLogSkew.maxMs, 1)} ms are a transaction-start timestamp artifact at releases, proven not to be double hand-outs; see section 1)` : ''}. **Recorded twice:** ${pass(r.recordedTwice)}. Late submit accepted after someone else re-claimed: ${pass(r.lateAcceptAfterReclaim)}; late submit rejected although nobody else claimed: ${pass(r.rejectedWithoutReclaim)}.`);
-  L.push(`- **Vanished tabs:** script claimable again ${f(v.claimable.mean)} min after the last heartbeat on average (p95 ${f(v.claimable.p95)}), actually re-claimed after ${f(v.reclaimed.mean)} min (p95 ${f(v.reclaimed.p95)}; ${v.censored} of ${v.n} not re-claimed before the run ended). **Polite release:** claimable instantly, re-claimed after ${f(p.reclaimed.mean)} min (p95 ${f(p.reclaimed.p95)}).`);
+  L.push(`- **Vanished tabs:** script claimable again ${f(v.claimable.mean)} min after the last heartbeat on average (p95 ${f(v.claimable.p95)}), actually re-claimed after ${f(v.reclaimed.mean)} min (p95 ${f(v.reclaimed.p95)}; ${v.censored} of ${v.n} not re-claimed before the run ended). **Polite release** (soft: the lease is shortened to a grace period, so another open tab of the same contributor can keep it): claimable ${f(p.claimable.mean)} min after the release, re-claimed after ${f(p.reclaimed.mean)} min (p95 ${f(p.reclaimed.p95)}).`);
   L.push(`- **Late submits (network stall longer than the lease):** ${r.late.accepted} accepted, ${r.late.rejected} rejected because the script had been re-claimed; ${f(r.late.minutesLost, 0)} contributor-minutes lost = $${f(r.late.dollarsLost)} at $${ctx.payCents / 100}/h.`);
   L.push(`- **Pool:** ${ranOut.length ? ranOut.map((x) => `${x.language} ran out at ${f(x.firstEmptyMin! / 60, 2)} h`).join(', ') : 'no language ran out'}; ${fi(r.pool.contributorsHitEmpty)} distinct contributors hit "empty" (${fi(r.pool.emptyHits)} empty responses). ${r.pool.runOut.filter((x) => !x.popular && x.firstEmptyMin === null).length} of ${r.pool.runOut.filter((x) => !x.popular).length} long-tail languages never ran out.`);
   L.push(`- **QA (lib/qa.ts, run during the sim):** of ${fi(qTotal)} submitted takes, ${fi(qn('approved') + qn('paid'))} approved, ${fi(qn('rejected'))} rejected (${topReasons(qa.reasons.rejected)}), ${fi(qn('needs_review'))} sent to human review${qn('needs_review') ? ` (${topReasons(qa.reasons.needs_review)})` : ''}, ${fi(qa.pending)} still pending. ${fi(qa.returnedToPool)} rejected scripts went back into the pool (${fi(qa.rerecordedScripts)} were recorded again before the end).`);
@@ -518,10 +525,10 @@ function renderMarkdown(r: CheckResult, ctx: { scale: number; sessionsLogged: bo
   }
 
   L.push('## 3. Recovery time', '');
-  L.push('Simulated minutes. "Claimable" = when the claim query would hand the script out again (lease end; for a release, the release itself). "Re-claimed" = the next `claimed` event on that script by another token, which also depends on demand in that language.', '');
+  L.push('Simulated minutes. "Claimable" = when the claim query would hand the script out again (lease end; for a soft release, the end of its grace lease, RELEASE_GRACE_SECONDS = 1.5 x heartbeat by default). "Re-claimed" = the next `claimed` event on that script by another token, which also depends on demand in that language.', '');
   L.push('| | n | claimable: mean | p95 | re-claimed: mean | p50 | p95 | max | not re-claimed by end |', '|---|---|---|---|---|---|---|---|---|');
   L.push(`| Tab vanished, abandoned (from last heartbeat) | ${v.n} | ${f(v.claimable.mean)} | ${f(v.claimable.p95)} | ${f(v.reclaimed.mean)} | ${f(v.reclaimed.p50)} | ${f(v.reclaimed.p95)} | ${f(v.reclaimed.max)} | ${v.censored} |`);
-  L.push(`| Polite release (from release) | ${p.n} | 0.00 | 0.00 | ${f(p.reclaimed.mean)} | ${f(p.reclaimed.p50)} | ${f(p.reclaimed.p95)} | ${f(p.reclaimed.max)} | ${p.censored} |`);
+  L.push(`| Polite release (from release) | ${p.n} | ${f(p.claimable.mean)} | ${f(p.claimable.p95)} | ${f(p.reclaimed.mean)} | ${f(p.reclaimed.p50)} | ${f(p.reclaimed.p95)} | ${f(p.reclaimed.max)} | ${p.censored} |`);
   L.push('', `${v.ownerReturned} of ${v.vanishedTotal} vanished leases weren't abandoned: the same contributor started a new session and got the same script back (resumed while live, or revived after expiry if nobody else had taken it). The simulator lets any idle contributor arrive next, including one whose tab just died. They are excluded from the vanished row; the same goes for polite releases the owner revived.`);
   L.push('', `Total idle script-minutes from abandoned tabs (last heartbeat to re-claim, or to the end of the run): ${f(v.idleScriptMinutes, 0)}. Claimable time is lease minus the time since the last heartbeat, so it can't exceed the lease (${o.leaseSeconds ? o.leaseSeconds / 60 : '?'} min). Re-claim is near-instant after that because the claim query takes the lowest free id first, and an expired lease is always below the frontier of never-claimed scripts. Per-token rows: recovery.csv.`, '');
 
