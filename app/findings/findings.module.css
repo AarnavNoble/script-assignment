@@ -1,7 +1,7 @@
 .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 16px; margin-bottom: 16px; }
 .tile { margin-bottom: 0; }
-.value { font-size: 30px; font-weight: 650; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; color: var(--accent); }
-.label { font-weight: 550; margin: 4px 0 6px; }
+.value { font-size: 34px; font-weight: 400; line-height: 1.1; letter-spacing: -0.04em; font-variant-numeric: tabular-nums; color: var(--text); }
+.label { font-family: var(--mono); font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text); margin: 10px 0 6px; }
 .text { color: var(--muted); max-width: 70ch; margin-bottom: 12px; }
 /* charts are rendered on white; keep them on a white plate in dark mode too */
-.chart { width: 100%; height: auto; display: block; border-radius: 6px; background: #fff; }
+.chart { width: 100%; height: auto; display: block; border-radius: var(--radius); background: #fff; border: 1px solid var(--border); }

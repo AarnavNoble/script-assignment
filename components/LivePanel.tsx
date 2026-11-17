@@ -89,7 +89,7 @@ export function LivePanel() {
   const r = d?.rates;
 
   return (
-    <section className="card live-card" aria-live="polite">
+    <section className="card corners live-card" data-tag="LIVE.LOG" aria-live="polite">
       <style>{CSS}</style>
       <div className="card-head">
         <h2>Live</h2>
@@ -140,8 +140,8 @@ const CSS = `
 .live-big { border-radius: var(--radius); padding: 14px 16px; background: var(--surface-2); transition: background-color .3s; }
 .live-big.ok { background: var(--ok-soft); }
 .live-big.bad { background: var(--bad-soft); }
-.live-big-l { font-size: 13px; color: var(--muted); }
-.live-big-v { font-size: 44px; font-weight: 600; line-height: 1.1; letter-spacing: -0.02em; }
+.live-big-l { font-family: var(--mono); font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }
+.live-big-v { font-size: 44px; font-weight: 500; line-height: 1.1; letter-spacing: -0.02em; }
 .live-big.ok .live-big-v { color: var(--ok); }
 .live-big.bad .live-big-v { color: var(--bad); }
 .live-side { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
@@ -149,14 +149,14 @@ const CSS = `
 .live-legend { gap: 12px; margin-top: 2px; }
 .live-legend i { display: inline-block; width: 10px; height: 2px; border-radius: 1px; vertical-align: middle; margin-right: 5px; }
 .live-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 8px; }
-.live-stat { background: var(--surface-2); border-radius: 8px; padding: 8px 10px; }
-.live-stat-v { font-size: 20px; font-weight: 600; line-height: 1.2; }
+.live-stat { border: 1px solid var(--line); border-radius: var(--radius); padding: 8px 10px; }
+.live-stat-v { font-size: 20px; font-weight: 500; line-height: 1.2; }
 .live-stat-v.ok { color: var(--ok); }
 .live-stat-v.warn { color: var(--warn); }
 .live-stat-v.bad { color: var(--bad); }
-.live-stat-l { font-size: 12px; color: var(--muted); }
+.live-stat-l { font-family: var(--mono); font-size: 11px; color: var(--muted); }
 .live-foot { margin-top: 10px; }
-.live-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--border); display: inline-block; }
+.live-dot { width: 6px; height: 6px; border-radius: 0; background: var(--border); display: inline-block; }
 .live-dot.on { background: var(--ok); animation: live-pulse 1.5s ease-in-out infinite; }
 @keyframes live-pulse { 50% { opacity: .35; } }
 @media (prefers-reduced-motion: reduce) { .live-dot.on { animation: none; } .live-big { transition: none; } }

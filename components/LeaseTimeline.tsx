@@ -143,7 +143,7 @@ export function LeaseTimeline({ minutes = 3, limit = 25 }: { minutes?: number; l
   const mid = BAR_H / 2;
 
   return (
-    <section className={`card ${s.root}`}>
+    <section className={`card ${s.root}`} data-tag="LEASES.SVG">
       <div className="card-head">
         <h2>Leases, live</h2>
         <span className="small muted">

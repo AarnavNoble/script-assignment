@@ -417,7 +417,7 @@ export default function Recorder({ languages }: { languages: string[] }) {
 
       {phase === 'active' && claim && (
         <>
-          <section className="card">
+          <section className="card" data-tag="SCRIPT.TXT">
             <div className="card-head">
               <div className="row">
                 <h2>Script #{claim.scriptId}</h2>
@@ -452,7 +452,7 @@ export default function Recorder({ languages }: { languages: string[] }) {
             </div>
           )}
 
-          <section className="card">
+          <section className="card" data-tag="TAKE.WAV">
             <div className="card-head">
               <h2>Recording</h2>
               <span className="small muted">WAV · 48 kHz · 16-bit · mono</span>

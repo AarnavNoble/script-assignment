@@ -125,7 +125,7 @@ export default function StatsView({ order, contributors, lowHours }: { order: st
               ? <span className="pill warn">Running low: {low.map((p) => p.language).join(', ')}</span>
               : <span className="pill ok">All pools healthy (over {lowHours} h left)</span>}
           </div>
-          <section className="card">
+          <section className="card" data-tag="POOL.DB">
             <PoolTable pools={pools} order={order} contributors={contributors} lowHours={lowHours} />
           </section>
           <p className="small muted">“Runs out in” = available ÷ claims in the last hour. Languages are ordered by how many contributors speak them. Highlighted rows will run out within {lowHours} h.</p>

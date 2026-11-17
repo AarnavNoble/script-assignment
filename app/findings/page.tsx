@@ -19,7 +19,7 @@ export default function FindingsPage() {
 
       <div className={styles.tiles}>
         {headline.map((h) => (
-          <div key={h.label} className={`card ${styles.tile}`}>
+          <div key={h.label} className={`card corners ${styles.tile}`}>
             <div className={styles.value}>{h.value}</div>
             <div className={styles.label}>{h.label}</div>
             <div className="small muted">{h.note}</div>
@@ -27,7 +27,7 @@ export default function FindingsPage() {
         ))}
       </div>
 
-      <section className="card">
+      <section className="card" data-tag="CLAIM.ORDER">
         <div className="card-head"><h2>The surprise: late takes were almost always thrown away</h2></div>
         <p className={styles.text}>
           When a contributor stalls past the lease, their take is accepted if nobody re-claimed the script. With the claim
@@ -49,7 +49,7 @@ export default function FindingsPage() {
         </div>
       </section>
 
-      <section className="card">
+      <section className="card" data-tag="SCRIPT.CHECK">
         <div className="card-head"><h2>Did they read the script?</h2></div>
         <p className={styles.text}>
           QA transcribes each take locally and compares it with the script, with thresholds per language. On 2,520
@@ -69,7 +69,7 @@ export default function FindingsPage() {
         <img className={styles.chart} style={{ marginTop: 12 }} src="/api/results/script-check.png" alt="Script-match error rates per language" />
       </section>
 
-      <section className="card">
+      <section className="card" data-tag="LEASE.SWEEP">
         <div className="card-head"><h2>Lease length: idle scripts vs takes lost to network stalls</h2></div>
         <p className={styles.text}>A 10-15 minute lease with 30-second heartbeats was the cheapest balance. Without heartbeats the same 10-minute lease lost 992 takes instead of 46.</p>
         {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -77,12 +77,12 @@ export default function FindingsPage() {
       </section>
 
       <div className="grid2">
-        <section className="card">
+        <section className="card" data-tag="POOL.SIM">
           <div className="card-head"><h2>Pools over 3 hours</h2></div>
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img className={styles.chart} src="/api/results/pool_over_time.png" alt="Available scripts per language over time" />
         </section>
-        <section className="card">
+        <section className="card" data-tag="FORECAST">
           <div className="card-head"><h2>Run-out forecast vs actual</h2></div>
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img className={styles.chart} src="/api/results/forecast.png" alt="Forecast vs actual run-out" />

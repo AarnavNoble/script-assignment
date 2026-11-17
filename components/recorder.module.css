@@ -1,27 +1,27 @@
 .script {
-  font-size: 20px;
-  line-height: 1.65;
-  margin: 16px 0 12px;
-  letter-spacing: 0.005em;
+  font-size: 24px;
+  line-height: 1.6;
+  margin: 18px 0 14px;
+  letter-spacing: -0.01em;
   white-space: pre-wrap;
 }
 .lease { display: flex; align-items: baseline; gap: 8px; }
-.leaseClock { font-size: 18px; font-weight: 600; min-width: 3.2em; text-align: right; }
-.leaseBar { height: 3px; background: var(--surface-2); border-radius: 2px; overflow: hidden; }
+.leaseClock { font-size: 18px; font-weight: 500; min-width: 3.2em; text-align: right; }
+.leaseBar { height: 2px; background: var(--surface-2); border-radius: 0; overflow: hidden; }
 .leaseBar > span {
   display: block; height: 100%; background: var(--accent);
   transform-origin: left; transition: transform 0.25s linear;
 }
 
 .meterRow { display: flex; align-items: center; gap: 14px; margin-bottom: 14px; }
-.meter { flex: 1; height: 10px; border-radius: 5px; background: var(--surface-2); overflow: hidden; }
+.meter { flex: 1; height: 8px; border-radius: 0; background: var(--surface-2); overflow: hidden; }
 .meterFill {
   height: 100%; width: 100%; transform: scaleX(0); transform-origin: left;
-  background: linear-gradient(90deg, var(--accent) 0%, var(--accent) 75%, var(--warn) 92%, var(--bad) 100%);
+  background: linear-gradient(90deg, var(--ok) 0%, var(--ok) 75%, var(--warn) 92%, var(--bad) 100%);
   background-size: 100% 100%;
   transition: transform 60ms linear;
 }
-.elapsed { font-size: 22px; font-weight: 600; min-width: 3.5em; text-align: right; }
+.elapsed { font-size: 22px; font-weight: 500; min-width: 3.5em; text-align: right; }
 .live { color: var(--bad); }
 .live::before {
   content: ''; display: inline-block; width: 8px; height: 8px; border-radius: 50%;
@@ -29,9 +29,9 @@
 }
 @keyframes pulse { 50% { opacity: 0.3; } }
 
-.audio { width: 100%; }
+.audio { width: 100%; color-scheme: inherit; }
 .progress { display: flex; flex-direction: column; gap: 6px; }
-.progressBar { height: 8px; border-radius: 4px; background: var(--surface-2); overflow: hidden; }
+.progressBar { height: 4px; border-radius: 0; background: var(--surface-2); overflow: hidden; }
 .progressBar > span {
   display: block; height: 100%; background: var(--accent);
   transform-origin: left; transition: transform 0.15s linear;
