@@ -8,6 +8,7 @@ const headline = [
   { value: '243 / 275', label: 'late takes saved', note: 'was 9 / 288: never-held scripts first, 87% less contributor time lost' },
   { value: '~57 / s', label: 'claims before p95 > 50 ms', note: '57x today, one Postgres + one Node process; the pool is the limit' },
   { value: '~2 h', label: 'warning before a pool runs dry', note: 'popular languages run out at ~2.7 h at today’s traffic mix' },
+  { value: '3%', label: 'of takes left for a person', note: 'script check (local Whisper): 90% of wrong readings rejected, 0.6% of correct ones wrongly, 14 languages' },
 ];
 
 export default function FindingsPage() {
@@ -46,6 +47,26 @@ export default function FindingsPage() {
             </tbody>
           </table>
         </div>
+      </section>
+
+      <section className="card">
+        <div className="card-head"><h2>Did they read the script?</h2></div>
+        <p className={styles.text}>
+          QA transcribes each take locally and compares it with the script, with thresholds per language. On 2,520
+          test readings in 14 languages (correct, a different sentence, half the sentence, the wrong language, noisy and
+          fast), only 3% of takes need a person instead of all of them.
+        </p>
+        <div className="table-wrap">
+          <table>
+            <thead><tr><th></th><th className="r">Approved</th><th className="r">To review</th><th className="r">Rejected</th></tr></thead>
+            <tbody>
+              <tr><td>Correct readings</td><td className="r num">96.6%</td><td className="r num">2.8%</td><td className="r num"><strong>0.6%</strong></td></tr>
+              <tr><td>Wrong readings</td><td className="r num"><strong>0.2%</strong></td><td className="r num">9.6%</td><td className="r num"><strong>90.2%</strong></td></tr>
+            </tbody>
+          </table>
+        </div>
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img className={styles.chart} style={{ marginTop: 12 }} src="/api/results/script-check.png" alt="Script-match error rates per language" />
       </section>
 
       <section className="card">

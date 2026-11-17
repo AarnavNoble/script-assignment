@@ -5,10 +5,11 @@ Hand each recording script to exactly one contributor at a time, get abandoned s
 <!-- TLDR:START -->
 **TL;DR**
 - Every claim is a **lease with a fencing token**: one atomic `FOR UPDATE SKIP LOCKED` claim, heartbeats to extend it, and expired leases count as free in the claim query itself.
-- **0 scripts handed out twice** across 7,267 leases in a simulation of 300 contributors closing tabs, refreshing, opening second tabs and stalling on bad networks (plus 96 tests against the real Postgres and storage). Abandoned scripts are claimable again exactly at lease end.
+- **0 scripts handed out twice** across 7,267 leases in a simulation of 300 contributors closing tabs, refreshing, opening second tabs and stalling on bad networks (plus 129 tests against the real Postgres and storage). Abandoned scripts are claimable again exactly at lease end.
 - **The surprise:** handing out the lowest free id meant a stalled contributor's expired script was re-taken within seconds in busy languages, so **279 of 288 late takes were thrown away**. Handing out never-held scripts first accepts **243 of 275**, cuts lost contributor time by 87%, and records just as much. It's now the default.
 - **Heartbeats matter more than lease length:** at a 10-min lease they cut takes lost to network stalls from 992 to 46. A 10-15 min lease was the cheapest balance of idle scripts vs lost takes.
 - **~57 claims/s** (57x today's traffic) on one Postgres + one Node process before p95 passes 50 ms. The limit is the connection pool, not Postgres.
+- **QA checks the take matches the script** (local Whisper, per-language thresholds). On 2,520 test readings in 14 languages it rejects 90% of wrong readings outright, wrongly rejects 0.6% of correct ones, and **leaves only 3% of takes for a person** instead of all of them.
 - The 4 popular languages run dry at **~2.7 h**; the low-pool alert gives **~2 h** of warning.
 - Demo: [60-second video](DEMO_URL)
 <!-- TLDR:END -->
@@ -133,6 +134,15 @@ A recording goes `pending_checks → approved | rejected | needs_review`, `needs
 
 ## Automatic QA
 
+**Did they read the script?** The audio checks below can't tell whether a contributor read the right sentence, which otherwise means a person listens to every take. With `WHISPER_URL` set, QA transcribes each take with whisper.cpp (ggml-small, local) and compares it with the script by character error rate, with thresholds per language: approve, reject as `wrong_script`, or send to review with the transcript shown to the reviewer. Measured on 2,520 synthesized takes in 14 languages (macOS voices: correct readings, a different sentence, half the sentence, the wrong language, noisy and fast readings), with thresholds chosen on half of each language's sentences and scored on the other half:
+
+| | Approved | To review | Rejected |
+|---|---|---|---|
+| Correct readings (1,260) | 96.6% | 2.8% | **0.6%** (wrongly) |
+| Wrong readings (1,260) | **0.2%** (slipped through) | 9.6% | **90.2%** |
+
+At a realistic 95% correct / 5% wrong mix, **3.1% of takes go to a person instead of 100%**. Transcription is ~0.3 s per sentence (p95 0.9 s) on a laptop. Bengali is off (Whisper-small can't transcribe it reliably) and Swahili is review-only (no voice to test with). TTS voices are cleaner than real contributors, so real accents, children and cheap mics will move these numbers; the per-language table and caveats are in [results/script-check.md](results/script-check.md).
+
 After submit, QA workers (`lib/qa.ts`, `lib/checks.ts`) decode the WAV and check what speech-data buyers reject: duration, silence ratio, speech level (inaudible / quiet), clipping (runs of clipped samples, so a single loud peak passes), leading/trailing padding, long internal pauses, a cut-off ending, and exact or near-duplicate audio. A clear fail rejects the take and puts the script back in the pool; a borderline take goes to the review queue on `/ops`; everything else is approved with its pay. Several workers can run at once: rows are taken with `SKIP LOCKED` plus a per-row advisory lock, and the duplicate check and the decision run under a per-audio-hash lock so two identical uploads can't both be approved.
 
 Verdicts on synthetic takes (`npx tsx scripts/qa-demo.ts`; the same variants at 1 kHz get identical verdicts):
@@ -238,7 +248,7 @@ What breaks first, and what I'd change:
 ## What I'd do next
 - Quota/priority-based script selection (coverage targets per language, speaker diversity)
 - Resumable multipart uploads for bad connections (only useful above ~5 MB parts, so for long takes)
-- Speech-to-text vs script (WER) as a QA check, so "doesn't follow the script" is caught automatically
+- Test the script check on real contributor audio (accents, children, cheap mics) and a larger Whisper model for the languages where small is weak (Bengali, Korean)
 - Per-contributor abandonment cool-downs (the job already lists high abandoners)
 - A payout ledger (append-only), instead of a `paid` status on the recording
 - A `qa_attempts` column so a recording that keeps failing on a storage error goes to review instead of being retried forever
@@ -250,10 +260,13 @@ cp .env.example .env            # set PG_PORT/DATABASE_URL if 5432 is taken
 docker compose up -d            # Postgres 16 + MinIO + bucket
 npm install
 npm run seed                    # 2,000 contributors, 16 languages x 1,200 scripts
-npm test                        # 96 tests against the real Postgres + MinIO
+npm test                        # 129 tests against the real Postgres + MinIO
 npm run dev                     # http://localhost:3000/record, /stats, /ops
 npm run jobs                    # the periodic job (cleanup, stats, alerts)
-npm run qa                      # the QA worker
+npm run qa                      # the QA worker (the script check is on if WHISPER_URL is set:)
+npm run whisper                 # whisper.cpp server; needs `brew install whisper-cpp` + ggml-small in ~/.cache/whisper
+WHISPER_URL=http://127.0.0.1:8178 npm run qa
+npm run script-eval             # re-measure the script check -> results/script-check.md
 npm run sim && npm run check    # 300-contributor simulation -> results/results.md
 npm run experiments             # lease sweep, claim order, forecast -> results/experiments.md
 ```
@@ -280,11 +293,12 @@ lib/assign.ts           claim / heartbeat / release / upload-url / submit
 lib/jobs.ts             periodic job: cleanup, pool stats, forecast + alerts, orphan + abandonment sweeps
 lib/review.ts           recording transitions: approve, reject, review, pay
 lib/checks.ts, qa.ts    automatic audio checks + the QA worker loop
+lib/transcribe.ts, scriptmatch.ts   speech-to-text client + script match (WER/CER, per-language thresholds)
 app/api/**              HTTP routes; app/record, app/stats, app/ops, app/findings pages
 lib/ops.ts, timeline.ts ops queries, the live invariant check, the lease timeline
 db/sentences.ts         original read-aloud sentences in 16 languages
 public/wav-worklet.js   AudioWorklet that captures raw PCM for the 48 kHz WAV
-tests/**                96 tests, real Postgres + MinIO
+tests/**                129 tests, real Postgres + MinIO
 sim/**                  simulation, invariant checker, experiments, load test, storm
 results/**              generated reports and charts
 ```
