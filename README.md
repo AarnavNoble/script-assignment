@@ -3,7 +3,7 @@
 Hand each recording script to exactly one contributor at a time, get abandoned scripts back quickly, and never lose or double-pay a recording. A small but real version: Next.js + Postgres + S3-compatible storage, with a browser recorder, an automatic QA step, an ops view, a test suite, a 300-contributor simulation, and experiments that measure the tradeoffs.
 
 <!-- TLDR:START -->
-**TL;DR** · Demo: [90-second video](DEMO_URL)
+**TL;DR**
 - **The surprise.** My first version handed out the lowest free script id. In the simulation, that meant a stalled contributor's expired script was re-taken within seconds in busy languages, so **279 of 288 late takes were thrown away**. Handing out never-held scripts first accepts **243 of 275**: wasted contributor time drops from ~93 to ~13 hours per 3 simulated hours, with the same number of recordings (both runs QA off). It's now the default.
 - **QA checks the take matches the script** (Whisper, run locally). The script check alone, cross-validated on 2,520 synthetic readings in 14 languages: rejects 90% of wrong readings and wrongly rejects 0.6% of correct ones. QA as a whole (2,580 readings, 15 languages) leaves **3% of takes for a person** instead of all of them. The length rules behind part of that were calibrated on the same synthetic voices, so expect more on real audio.
 - **0 scripts handed out twice** across 7,267 leases while 300 simulated contributors closed tabs, refreshed, opened second tabs and stalled, plus 129 tests against the real Postgres and storage.
