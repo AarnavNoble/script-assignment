@@ -258,6 +258,18 @@ npm run sim && npm run check    # 300-contributor simulation -> results/results.
 npm run experiments             # lease sweep, claim order, forecast -> results/experiments.md
 ```
 
+### Watch the invariant hold live
+
+```bash
+npm run build && LEASE_SECONDS=60 HEARTBEAT_SECONDS=5 npm start   # short lease so expiry is visible
+npm run jobs & npm run qa &
+npm run storm -- --seconds 90   # ~150 simulated contributors (ids >= 100) hit the running app
+```
+
+Open `/ops` while it runs. The **Live** card recomputes "handed out twice" from the audit log every 1.5 s (the same interval rules as the offline checker), next to claims, expiries, late accepts and QA verdicts. The **lease timeline** shows every recent script as a row: each holder's lease with heartbeat ticks, the lease still ahead, and how it ended (submitted, released, expired, revived) with an arrow to the next holder. Record a script yourself in the middle of it. `/findings` has the measured results and charts.
+
+`npm run demo -- race sw` leaves one script in a language so two browser windows can race for it (one wins, the other is told none are left); `npm run demo -- low es 10` brings a pool near empty for the low-pool highlight on `/stats`.
+
 The contributor id comes from an `x-contributor-id` header (or a picker on `/record`) as a stand-in for real auth. `scripts/smoke.sh` walks the API with curl.
 
 ## Layout
@@ -268,9 +280,11 @@ lib/assign.ts           claim / heartbeat / release / upload-url / submit
 lib/jobs.ts             periodic job: cleanup, pool stats, forecast + alerts, orphan + abandonment sweeps
 lib/review.ts           recording transitions: approve, reject, review, pay
 lib/checks.ts, qa.ts    automatic audio checks + the QA worker loop
-app/api/**              HTTP routes; app/record, app/stats, app/ops pages
+app/api/**              HTTP routes; app/record, app/stats, app/ops, app/findings pages
+lib/ops.ts, timeline.ts ops queries, the live invariant check, the lease timeline
+db/sentences.ts         original read-aloud sentences in 16 languages
 public/wav-worklet.js   AudioWorklet that captures raw PCM for the 48 kHz WAV
 tests/**                96 tests, real Postgres + MinIO
-sim/**                  simulation, invariant checker, experiments, load test
+sim/**                  simulation, invariant checker, experiments, load test, storm
 results/**              generated reports and charts
 ```
