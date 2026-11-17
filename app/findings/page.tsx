@@ -54,7 +54,7 @@ export default function FindingsPage() {
         <p className={styles.text}>
           QA transcribes each take locally and compares it with the script, with thresholds per language. On 2,520
           test readings in 14 languages (correct, a different sentence, half the sentence, the wrong language, noisy and
-          fast), with the audio checks judged against each script's length, QA as a whole leaves 3% of takes for a person instead of all of them (it was 33% before that change).
+          fast), with the audio checks judged against each script’s length, QA as a whole leaves 3% of takes for a person instead of all of them (it was 33% before that change).
         </p>
         <div className="table-wrap">
           <table>
