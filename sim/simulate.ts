@@ -65,6 +65,8 @@ export type SimOptions = {
   minContributorId: number;   // only these contributors take part (keeps a live demo's low ids free for a human)
   maxContributorId: number;
   takeSeconds?: [number, number]; // audio take length range (real seconds of audio); default ~3-min takes
+  /** storm only: build takes from real TTS readings (sim/lib/speech-takes.ts); gets the synthetic variants as fallback */
+  speechTakes?: (variants: import('./lib/audio').AudioVariant[]) => SessionCtx['takeFor'];
   job: boolean;               // run lib/jobs runJob in-process on jobIntervalSeconds (off when the target already runs one)
   /** Called once arrivals start, with live handles for progress reporting. */
   onStart?: (live: { api: Api; records: SessionRecord[]; t0: Date; realStart: number; inflight: () => number }) => void;
@@ -232,6 +234,7 @@ export async function runSimulation(partial: Partial<SimOptions> = {}): Promise<
     let stopping = false;
     const ctxBase = {
       api, variants, msPerSimMin,
+      takeFor: o.speechTakes?.(variants),
       leaseSimMin: o.leaseSeconds / 60,
       heartbeatSimMin: o.heartbeatSeconds / 60,
       heartbeatOn: o.heartbeat,

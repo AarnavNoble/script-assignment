@@ -6,6 +6,14 @@
 //   npm run storm -- [--base-url http://localhost:3000] [--seconds 90] [--online 150] [--scale 10]
 //                    [--min-contributor 100] [--take-seconds 10,18] [--seed N] [--job]
 //                    [--server-lease 60 --server-heartbeat 5]   (only if they can't be read from the server)
+//                    [--synthetic]   (old synthetic noise takes even if real readings are prepared)
+//   npx tsx --env-file=.env sim/storm.ts --prepare     (once, before recording day: TTS readings, ~1-2 min)
+//
+// Takes: with --prepare done, each upload is a real TTS reading (macOS `say`) of the claimed script's
+// sentence, so a QA worker with the script check on (WHISPER_URL) approves them; ~5% read a different
+// sentence (-> wrong_script), and 5% / 3% / 3% are silent / clipped / too short as before. Swahili has no
+// voice and keeps the synthetic takes (QA's Swahili policy sends a mismatch to review, never rejects).
+// See sim/lib/speech-takes.ts.
 //
 // Time: the server's lease/heartbeat are real seconds (demo: 60 / 5). The simulator thinks in simulated
 // time, so it is given lease = server lease x scale and heartbeat = server heartbeat x scale; at scale 10
@@ -18,6 +26,7 @@ import { join } from 'node:path';
 import { runSimulation, type SimOptions } from './simulate';
 import type { SessionRecord } from './lib/behaviors';
 import type { Api } from './lib/http';
+import { loadStormSpeech, prepareStormSpeech, STORM_CACHE, WRONG_READING_SHARE } from './lib/speech-takes';
 
 type StormOptions = {
   baseUrl: string;
@@ -35,6 +44,7 @@ type StormOptions = {
   outDir: string;
   databaseUrl: string;
   bucket: string;
+  synthetic: boolean;
 };
 
 const MIN_STORM_ID = 100;
@@ -55,6 +65,7 @@ function parseArgs(argv: string[]): StormOptions {
     outDir: join(tmpdir(), 'script-assignment-storm'),
     databaseUrl: process.env.DATABASE_URL ?? 'postgres://postgres:postgres@localhost:5433/scripts',
     bucket: process.env.S3_BUCKET ?? 'recordings',
+    synthetic: false,
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -76,6 +87,7 @@ function parseArgs(argv: string[]): StormOptions {
       case '--out': o.outDir = v; i++; break;
       case '--db': o.databaseUrl = v; i++; break;
       case '--bucket': o.bucket = v; i++; break;
+      case '--synthetic': o.synthetic = true; break;
       default: throw new Error(`unknown argument ${a}`);
     }
   }
@@ -121,6 +133,10 @@ async function serverTiming(o: StormOptions, probeId: number): Promise<{ lease: 
 const pad = (s: string | number, n: number) => String(s).padStart(n);
 
 async function main() {
+  if (process.argv.includes('--prepare')) {
+    await prepareStormSpeech();
+    return;
+  }
   const o = parseArgs(process.argv.slice(2));
   const probeId = o.minContributorId; // a storm id; the simulator may pick it later and revive its released script
   const t = await serverTiming(o, probeId);
@@ -131,6 +147,21 @@ async function main() {
   console.log(`[storm] target ${o.baseUrl}: server lease ${t.lease}s, heartbeat ${t.heartbeat}s (from ${t.source})`);
   console.log(`[storm] ${o.online} online, contributors >= ${o.minContributorId}, ${o.seconds}s real (arrivals ${arrivalsS.toFixed(0)}s + drain ${drainS.toFixed(0)}s), scale ${o.scale}: 5-min session = ${(5 * realMsPerSimMin / 1000).toFixed(0)}s, sim lease ${t.lease * o.scale}s / heartbeat ${t.heartbeat * o.scale}s`);
   console.log(`[storm] seed ${o.seed}; takes ${o.takeSeconds[0]}-${o.takeSeconds[1]}s at ${o.sampleRate} Hz (~${(((o.takeSeconds[0] + o.takeSeconds[1]) / 2) * o.sampleRate * 2 / 1e6).toFixed(1)} MB each)`);
+
+  let speechNote = 'synthetic takes (--synthetic)';
+  let speechTakes: SimOptions['speechTakes'];
+  if (!o.synthetic) {
+    speechTakes = (variants) => {
+      const s = loadStormSpeech(variants);
+      if (!s) return undefined;
+      return s.takeFor;
+    };
+    const probe = loadStormSpeech([]);
+    speechNote = probe
+      ? `real TTS readings for ${probe.languages.length} languages (${(WRONG_READING_SHARE * 100).toFixed(0)}% read a different sentence); synthetic takes for ${probe.missing.join(', ') || 'none'} (no voice)`
+      : `synthetic takes: no readings in ${STORM_CACHE} (run with --prepare first if QA has WHISPER_URL set)`;
+  }
+  console.log(`[storm] audio: ${speechNote}`);
 
   let ticker: NodeJS.Timeout | undefined;
   let live: { api: Api; records: SessionRecord[]; t0: Date; realStart: number; inflight: () => number } | null = null;
@@ -144,7 +175,7 @@ async function main() {
     jobIntervalSeconds: 15 * o.scale,
     online: o.online, minutes: (arrivalsS * 1000) / realMsPerSimMin, drainMinutes: (drainS * 1000) / realMsPerSimMin,
     minContributorId: o.minContributorId, maxContributorId: o.maxContributorId,
-    audioSampleRate: o.sampleRate, takeSeconds: o.takeSeconds,
+    audioSampleRate: o.sampleRate, takeSeconds: o.takeSeconds, speechTakes,
     // stalls just past the real lease, so late takes come back within a 60-90 s storm
     stallFactor: [1.05, 1.3],
     // a bit more of every failure mode than the 3-hour baseline, so it shows on camera
@@ -192,12 +223,14 @@ async function main() {
     const byBehavior: Record<string, number> = {};
     for (const r of recs) byBehavior[r.behavior] = (byBehavior[r.behavior] ?? 0) + 1;
     const errors = recs.filter((r) => r.outcome === 'error').length;
+    const byAudio: Record<string, number> = {};
+    for (const r of recs) if (r.audioKind) byAudio[r.audioKind] = (byAudio[r.audioKind] ?? 0) + 1;
     console.log('');
     console.log(`[storm] done in ${result.realSeconds.toFixed(0)}s: ${result.sessions} sessions (${Object.entries(byBehavior).map(([k, v]) => `${k} ${v}`).join(', ')}), ${result.unfinished} cut at the end`);
     console.log(`[storm] claims ${c.claims}, resumes ${c.resumes}, revives ${c.revives}, heartbeats ${c.heartbeats}, released ${c.released}`);
     console.log(`[storm] expired ${c.expired} (job ${c.expiredByJob}, reclaim ${c.expiredByReclaim}), lost ${c.lost}, pool empty ${c.poolEmpty}`);
     console.log(`[storm] submitted ${c.submitted}, late accepted ${c.lateAccepted}, late rejected ${c.rejected}; QA approved ${c.qaApproved}, rejected ${c.qaRejected}, review ${c.qaReview} (QA keeps going after the storm)`);
-    console.log(`[storm] uploaded ${uploadedMB.toFixed(0)} MB; sessions with errors ${errors}; out ${result.outDir}`);
+    console.log(`[storm] uploaded ${uploadedMB.toFixed(0)} MB (${Object.entries(byAudio).map(([k, v]) => `${k} ${v}`).join(', ')}); sessions with errors ${errors}; out ${result.outDir}`);
     console.log(`[storm] handed out twice: ${inv.handedOutTwice} (across ${inv.leasesChecked} leases in the last ${inv.windowMinutes} min)`);
     console.log(`[storm] recorded twice: ${inv.recordedTwice}`);
     process.exitCode = inv.handedOutTwice === 0 && inv.recordedTwice === 0 ? 0 : 1;

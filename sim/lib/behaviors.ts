@@ -17,6 +17,8 @@ export type SessionCtx = {
   api: Api;
   rng: Rng;
   variants: AudioVariant[];
+  /** Storm with real speech (sim/lib/speech-takes.ts): builds the take for the claimed script. Unset = synthetic variants. */
+  takeFor?: (rng: Rng, language: string | undefined, body: string | undefined) => { kind: string; durationS: number; wav: Buffer };
   /** real milliseconds per simulated minute */
   msPerSimMin: number;
   leaseSimMin: number;
@@ -43,6 +45,7 @@ export type SessionRecord = {
   token?: string;
   scriptId?: number;
   scriptLanguage?: string;
+  scriptBody?: string;
   outcome?: string; // submitted | late_accepted | rejected | vanished | released | empty | lost | error | cut
   vanishedAt?: number;
   releasedAt?: number;
@@ -93,13 +96,15 @@ async function heartbeatUntil(ctx: SessionCtx, rec: SessionRecord, who: number, 
 
 /** presign -> PUT -> submit. Returns the submit response (or the failing step's). */
 async function uploadAndSubmit(ctx: SessionCtx, rec: SessionRecord, who: number, token: string, copies = 1): Promise<Res[]> {
-  const v = pickVariant(ctx.rng, ctx.variants);
+  // takeFor builds a unique take itself; the synthetic path draws exactly as before (same RNG stream)
+  const t = ctx.takeFor?.(ctx.rng, rec.scriptLanguage, rec.scriptBody);
+  const v = t ?? pickVariant(ctx.rng, ctx.variants);
   rec.audioKind = v.kind;
   rec.audioDurationS = v.durationS;
   rec.nominalBytes = nominalBytes(v.durationS);
   const u = await ctx.api.uploadUrl(who, token);
   if (u.status === 200) {
-    const body = uniqueCopy(ctx.rng, v);
+    const body = t ? t.wav : uniqueCopy(ctx.rng, v as AudioVariant);
     rec.uploadBytes = body.length;
     const p = await ctx.api.put(u.json.url, body, u.json.contentType ?? 'audio/wav');
     if (p.status !== 200) err(rec, 'put', p);
@@ -154,6 +159,7 @@ export async function runSession(ctx: SessionCtx, rec: SessionRecord): Promise<S
   rec.token = token;
   rec.scriptId = c.json.scriptId;
   rec.scriptLanguage = c.json.language;
+  if (ctx.takeFor) rec.scriptBody = c.json.body; // only the storm's speech takes need it (keeps sim output unchanged)
   const t0 = Date.now();
   const end = t0 + planned * min;
 
