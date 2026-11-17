@@ -130,6 +130,9 @@ export function LivePanel() {
       <div className="small muted live-foot">
         Counts are over the last {d?.rateWindowSeconds ?? 60} s{r ? ` · ${fmt(r.submitted)} submits, ${fmt(r.released)} closed tabs, ${fmt(r.revives)} revived, ${fmt(r.rejected)} late rejected` : ''}
       </div>
+      <div className="small muted live-foot">
+        Late accepted: a take submitted after its lease lapsed, kept because nobody else had claimed the script. Revived: a contributor came back after a lapse and got the same script and token.
+      </div>
     </section>
   );
 }

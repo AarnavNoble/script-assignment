@@ -19,6 +19,7 @@ type Overview = {
 type QueueItem = {
   id: number; scriptId: number; contributorId: number; createdAt: string; late: boolean; sizeBytes: number; language: string; body: string;
   durationS: number | null; silenceRatio: number | null; clippingRatio: number | null; peakDb: number | null; rmsDb: number | null; qaNote: string | null; estPayCents: number | null;
+  heard: string | null; scriptError: number | null; scriptMetric: string | null;
 };
 type Decision = { id: number; at: string; event: string; by: string; scriptId: number | null; contributorId: number | null; detail: Record<string, unknown> | null };
 type Review = { queue: { total: number; items: QueueItem[] }; decisions: Decision[] };
@@ -188,7 +189,13 @@ export default function OpsView({ order }: { order: string[] }) {
                     {(playing === r.id || rejecting === r.id) && (
                       <tr>
                         <td colSpan={11} style={{ background: 'var(--surface-2)' }}>
-                          <p className="small muted" style={{ marginBottom: 8 }}>“{r.body}{r.body.length >= 140 ? '…' : ''}”</p>
+                          <p className="small muted" style={{ marginBottom: 4 }}><span className="mono">Script</span> “{r.body}{r.body.length >= 140 ? '…' : ''}”</p>
+                          {r.heard !== null && (
+                            <p className="small" style={{ marginBottom: 8 }}>
+                              <span className="mono muted">Heard</span> “{r.heard}”
+                              {r.scriptError !== null && <span className="mono muted"> · {(r.scriptMetric ?? 'cer').toUpperCase()} {r.scriptError.toFixed(2)}</span>}
+                            </p>
+                          )}
                           {playing === r.id && <audio controls autoPlay src={`/api/ops/recordings/${r.id}/audio`} style={{ width: '100%', marginBottom: 8 }} />}
                           {rejecting === r.id && (
                             <div className="row">

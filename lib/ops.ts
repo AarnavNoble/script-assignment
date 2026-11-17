@@ -184,7 +184,10 @@ export async function reviewQueue(limit = 50) {
   const r = await pool().query(
     `SELECT r.id, r.script_id, r.contributor_id, r.created_at, r.late, r.size_bytes,
             r.duration_s, r.silence_ratio, r.clipping_ratio, r.peak_db, r.rms_db, r.review_note, r.est_pay_cents,
-            s.language, left(s.body, 140) AS body
+            s.language, left(s.body, 140) AS body,
+            -- what the script check heard, so the reviewer can compare it with the script
+            (SELECT c FROM jsonb_array_elements(CASE WHEN jsonb_typeof(r.checks) = 'array' THEN r.checks ELSE '[]'::jsonb END) c
+             WHERE c->>'name' = 'script_match' LIMIT 1) AS script_check
      FROM recordings r JOIN scripts s ON s.id = r.script_id
      WHERE r.status = 'needs_review'
      ORDER BY r.created_at DESC, r.id DESC
@@ -199,6 +202,9 @@ export async function reviewQueue(limit = 50) {
       late: row.late, sizeBytes: Number(row.size_bytes), language: row.language, body: row.body,
       durationS: row.duration_s, silenceRatio: row.silence_ratio, clippingRatio: row.clipping_ratio,
       peakDb: row.peak_db, rmsDb: row.rms_db, qaNote: row.review_note, estPayCents: row.est_pay_cents,
+      heard: (row.script_check?.transcript as string | undefined) ?? null,
+      scriptError: typeof row.script_check?.value === 'number' ? (row.script_check.value as number) : null,
+      scriptMetric: (row.script_check?.metric as string | undefined) ?? null,
     })),
   };
 }
