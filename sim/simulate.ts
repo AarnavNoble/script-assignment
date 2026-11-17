@@ -61,6 +61,13 @@ export type SimOptions = {
   qaLimit: number;            // recordings per runQaOnce batch
   qaDrainTimeoutS: number;    // real seconds to wait for QA to finish the backlog
   quiet: boolean;
+  // --- storm mode (sim/storm.ts) ---
+  minContributorId: number;   // only these contributors take part (keeps a live demo's low ids free for a human)
+  maxContributorId: number;
+  takeSeconds?: [number, number]; // audio take length range (real seconds of audio); default ~3-min takes
+  job: boolean;               // run lib/jobs runJob in-process on jobIntervalSeconds (off when the target already runs one)
+  /** Called once arrivals start, with live handles for progress reporting. */
+  onStart?: (live: { api: Api; records: SessionRecord[]; t0: Date; realStart: number; inflight: () => number }) => void;
 };
 
 export const DEFAULTS: SimOptions = {
@@ -101,6 +108,9 @@ export const DEFAULTS: SimOptions = {
   qaLimit: 100,
   qaDrainTimeoutS: 300,
   quiet: false,
+  minContributorId: 1,
+  maxContributorId: Number.MAX_SAFE_INTEGER,
+  job: true,
 };
 
 /** Env for the server and for in-process lib calls (runJob, storage). Real seconds = simulated / scale. */
@@ -180,8 +190,9 @@ export async function runSimulation(partial: Partial<SimOptions> = {}): Promise<
     log(`emptied bucket ${o.bucket} (${objs.length} objects)`);
   }
 
-  const contributors = (await pool().query('SELECT id, language FROM contributors ORDER BY id')).rows as { id: number; language: string }[];
-  if (contributors.length < o.online) throw new Error(`only ${contributors.length} contributors for ${o.online} online`);
+  const contributors = (await pool().query('SELECT id, language FROM contributors WHERE id BETWEEN $1 AND $2 ORDER BY id',
+    [o.minContributorId, Math.min(o.maxContributorId, 2 ** 31 - 1)])).rows as { id: number; language: string }[];
+  if (contributors.length < o.online) throw new Error(`only ${contributors.length} contributors (ids ${o.minContributorId}-${o.maxContributorId}) for ${o.online} online`);
 
   // 2. Server
   if (o.server === 'start') buildIfNeeded(ROOT, o.distDir, o.build);
@@ -216,7 +227,7 @@ export async function runSimulation(partial: Partial<SimOptions> = {}): Promise<
 
   try {
     await api.warm();
-    const variants = makeVariants(o.seed, o.audioSampleRate);
+    const variants = makeVariants(o.seed, o.audioSampleRate, 12, o.takeSeconds);
     const msPerSimMin = (60 / o.scale) * 1000;
     let stopping = false;
     const ctxBase = {
@@ -252,7 +263,7 @@ export async function runSimulation(partial: Partial<SimOptions> = {}): Promise<
 
     // background job, same cadence as prod (scaled); never overlaps itself
     let jobBusy = false;
-    jobTimer = setInterval(async () => {
+    if (o.job) jobTimer = setInterval(async () => {
       if (jobBusy) return;
       jobBusy = true;
       const t = performance.now();
@@ -287,6 +298,7 @@ export async function runSimulation(partial: Partial<SimOptions> = {}): Promise<
       inflight.add(p);
       p.finally(() => inflight.delete(p));
     }
+    o.onStart?.({ api, records, t0, realStart, inflight: () => inflight.size });
 
     // progress
     const progress = setInterval(() => {
@@ -315,7 +327,7 @@ export async function runSimulation(partial: Partial<SimOptions> = {}): Promise<
       else log(`QA done: ${JSON.stringify(r.total)}`);
     }
     // one last job run so pool_stats reflects QA rejections returned to the pool
-    try { await runJob(); jobRuns++; } catch (e) { jobErrors++; }
+    if (o.job) try { await runJob(); jobRuns++; } catch (e) { jobErrors++; }
     const end = (await pool().query('SELECT now() AS t')).rows[0].t as Date;
     loop.disable();
     const realSeconds = (Date.now() - realStart) / 1000;
@@ -392,6 +404,11 @@ function parseArgs(argv: string[]): Partial<SimOptions> {
       case '--stall-abs': { const [m, sg, mx] = v.split(',').map(Number); o.stallAbsMin = { median: m, sigma: sg, max: mx }; i++; break; }
       case '--claim-order': o.claimOrder = v as SimOptions['claimOrder']; i++; break;
       case '--qa-loops': num('qaLoops', v); i++; break;
+      case '--min-contributor': num('minContributorId', v); i++; break;
+      case '--max-contributor': num('maxContributorId', v); i++; break;
+      case '--sample-rate': num('audioSampleRate', v); i++; break;
+      case '--take-seconds': { const [lo, hi] = v.split(',').map(Number); o.takeSeconds = [lo, hi]; i++; break; }
+      case '--no-job': o.job = false; break;
       default: throw new Error(`unknown argument ${a}`);
     }
   }

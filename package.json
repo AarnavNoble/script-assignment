@@ -14,7 +14,9 @@
     "qa": "tsx --env-file=.env workers/qa.ts",
     "sim": "tsx --env-file=.env sim/simulate.ts",
     "check": "tsx --env-file=.env sim/check.ts",
-    "experiments": "tsx --env-file=.env sim/experiments.ts"
+    "experiments": "tsx --env-file=.env sim/experiments.ts",
+    "storm": "tsx --env-file=.env sim/storm.ts",
+    "demo": "tsx --env-file=.env scripts/demo-setup.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1169.0",

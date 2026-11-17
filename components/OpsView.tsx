@@ -3,6 +3,7 @@ import { Fragment, useCallback, useEffect, useState } from 'react';
 import { api, ApiError, clock, money } from './api';
 import { PoolTable, type PoolRow } from './StatsView';
 import { LeaseTimeline } from './LeaseTimeline';
+import { LivePanel } from './LivePanel';
 
 type Lease = { scriptId: number; language: string; contributorId: number; token: string; claimedAt: string; leaseExpiresAt: string; remainingSeconds: number; lastHeartbeatAt: string | null; heartbeats: number };
 type Overview = {
@@ -139,6 +140,9 @@ export default function OpsView({ order }: { order: string[] }) {
       )}
 
       {actionMsg && <div className={`notice ${actionMsg.tone}`} role="status">{actionMsg.text}</div>}
+
+      {/* ---------- live invariant check + activity ---------- */}
+      <LivePanel />
 
       {/* ---------- lease timeline: who holds what, heartbeats, expiry, hand-offs ---------- */}
       <LeaseTimeline />

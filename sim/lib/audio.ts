@@ -45,14 +45,20 @@ function speech(rng: Rng, sampleRate: number, durationS: number, gain: number): 
   return out;
 }
 
-export function makeVariants(seed: number, sampleRate = 1000, normals = 12): AudioVariant[] {
+/**
+ * `takeSeconds` overrides the take length (default: ~3-min takes, 165-200 s normals and 180 s silent/clipped).
+ * The storm uses short 48 kHz takes (e.g. [10, 18]) so QA checks real-rate audio without GBs of uploads.
+ */
+export function makeVariants(seed: number, sampleRate = 1000, normals = 12, takeSeconds?: [number, number]): AudioVariant[] {
   const rng = makeRng(seed);
   const v: AudioVariant[] = [];
   const mk = (kind: AudioKind, d: number, gain: number) =>
     v.push({ kind, durationS: d, sampleRate, wav: encodeWav({ sampleRate, samples: speech(rng, sampleRate, d, gain) }) });
-  for (let k = 0; k < normals; k++) mk('normal', Math.round(rng.uniform(165, 200)), rng.uniform(0.35, 0.6));
-  mk('silent', 180, 0.002);
-  mk('clipped', 180, 6);
+  const [lo, hi] = takeSeconds ?? [165, 200];
+  const mid = takeSeconds ? Math.round((lo + hi) / 2) : 180;
+  for (let k = 0; k < normals; k++) mk('normal', Math.round(rng.uniform(lo, hi)), rng.uniform(0.35, 0.6));
+  mk('silent', mid, 0.002);
+  mk('clipped', mid, 6);
   mk('short', 2.2, 0.5);
   return v;
 }

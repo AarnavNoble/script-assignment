@@ -255,3 +255,160 @@ export async function overview() {
     pools, alerts, leases: l, abandoners, totals,
   };
 }
+
+// ---------- live invariant + metrics (the /ops "Live" card, polled every ~1.5 s; sim/storm.ts) ----------
+
+/**
+ * Each token's live interval, rebuilt from claim_events, with the same rules as sim/check.ts ("Handed out
+ * twice"): [claimed at, lease end as of its latest lease-setting event (claimed / heartbeat / resumed /
+ * soft release)], cut at its last submit / hard release unless a revive came after it.
+ *
+ * Kept cheap enough to poll every 1-2 s: only scripts that were claimed by two or more different tokens
+ * since now() - $1 can have an overlap, so the full event history (mostly heartbeats) is aggregated for
+ * those scripts only (claim_events_script index); every other script had a single lease in the range and
+ * is trivially fine. The latest lease end is max(ARRAY[id, epoch]) rather than array_agg(... ORDER BY),
+ * which avoids a sort per token (ids are < 2^53, exact as float8).
+ */
+const LIVE_INTERVALS = `
+  WITH c AS (
+    SELECT script_id, claim_token, at FROM claim_events
+    WHERE event = 'claimed' AND at > now() - make_interval(secs => $1) AND script_id IS NOT NULL
+  ), multi AS (
+    SELECT script_id FROM c GROUP BY script_id HAVING count(DISTINCT claim_token) > 1
+  ), tok AS (
+    SELECT e.script_id, e.claim_token,
+      min(e.at) FILTER (WHERE e.event = 'claimed') AS start,
+      max(ARRAY[e.id::float8, EXTRACT(EPOCH FROM e.lease_expires_at)::float8])
+        FILTER (WHERE e.event IN ('claimed','heartbeat','resumed','released') AND e.lease_expires_at IS NOT NULL) AS lease_last,
+      max(e.at) FILTER (WHERE e.event IN ('submitted','late_accepted') OR (e.event = 'released' AND e.lease_expires_at IS NULL)) AS last_cut,
+      max(e.at) FILTER (WHERE e.event = 'resumed' AND e.detail->>'revived' = 'true') AS last_revived,
+      max(e.at) FILTER (WHERE e.event = 'released') AS released
+    FROM claim_events e JOIN multi m ON m.script_id = e.script_id
+    WHERE e.at > now() - make_interval(secs => $1) AND e.claim_token IS NOT NULL
+    GROUP BY e.script_id, e.claim_token
+  ), iv AS (
+    SELECT script_id, claim_token, start, released,
+      CASE WHEN last_cut IS NOT NULL AND (last_revived IS NULL OR last_cut > last_revived)
+           THEN LEAST(to_timestamp(lease_last[2]), last_cut) ELSE to_timestamp(lease_last[2]) END AS stop
+    FROM tok WHERE start IS NOT NULL AND lease_last IS NOT NULL
+  )`;
+
+export type LiveInvariant = { handedOutTwice: number; leasesChecked: number; recordedTwice: number; windowMinutes: number };
+
+/**
+ * Scripts handed out twice: pairs of different tokens on one script whose live intervals overlap, for
+ * leases handed out in the last `windowMinutes` (leasesChecked) and the window before it (so a lease that
+ * started just before the window is still compared). Like sim/check.ts, an overlap whose earlier lease
+ * ends exactly at its own release event is logging skew (the release committed before the later claim
+ * could pick the row), not a double hand-out. recordedTwice: scripts with more than one non-rejected
+ * recording (also enforced by a unique index; counted here as a live check).
+ */
+export async function liveInvariant(windowMinutes = 30): Promise<LiveInvariant> {
+  const win = Math.max(1, windowMinutes) * 60;
+  const r = await pool().query(
+    `${LIVE_INTERVALS}
+     SELECT
+       (SELECT count(*) FROM c WHERE at > now() - make_interval(secs => $2))::int AS leases,
+       (SELECT count(*) FROM iv e JOIN iv l
+          ON e.script_id = l.script_id AND e.claim_token <> l.claim_token
+         AND (e.start, e.claim_token) < (l.start, l.claim_token)
+         AND e.start < l.stop AND l.start < e.stop
+        WHERE GREATEST(e.stop, l.stop) > now() - make_interval(secs => $2)
+          AND NOT (e.released IS NOT NULL AND e.stop = e.released))::int AS overlaps,
+       (SELECT count(*) FROM (SELECT script_id FROM recordings WHERE status <> 'rejected'
+          GROUP BY script_id HAVING count(*) > 1) x)::int AS recorded_twice`,
+    [2 * win, win],
+  );
+  const row = r.rows[0];
+  return { handedOutTwice: row.overlaps, leasesChecked: row.leases, recordedTwice: row.recorded_twice, windowMinutes: win / 60 };
+}
+
+export type LiveRates = {
+  claims: number; resumes: number; revives: number; heartbeats: number;
+  expired: number; expiredByJob: number; expiredByReclaim: number; released: number;
+  lateAccepted: number; rejected: number; submitted: number; lost: number;
+  qaApproved: number; qaRejected: number; qaReview: number; poolEmpty: number;
+};
+
+const emptyRates = (): LiveRates => ({
+  claims: 0, resumes: 0, revives: 0, heartbeats: 0, expired: 0, expiredByJob: 0, expiredByReclaim: 0, released: 0,
+  lateAccepted: 0, rejected: 0, submitted: 0, lost: 0, qaApproved: 0, qaRejected: 0, qaReview: 0, poolEmpty: 0,
+});
+
+function addEvent(r: LiveRates, event: string, by: string | null, revived: boolean, n: number) {
+  switch (event) {
+    case 'claimed': r.claims += n; break;
+    case 'resumed': if (revived) r.revives += n; else r.resumes += n; break;
+    case 'heartbeat': r.heartbeats += n; break;
+    case 'expired': r.expired += n; if (by === 'reclaim') r.expiredByReclaim += n; else r.expiredByJob += n; break;
+    case 'released': r.released += n; break;
+    case 'late_accepted': r.lateAccepted += n; break;
+    case 'rejected': r.rejected += n; break;
+    case 'submitted': r.submitted += n; break;
+    case 'lost': r.lost += n; break;
+    case 'qa_approved': r.qaApproved += n; break;
+    case 'qa_rejected': r.qaRejected += n; break;
+    case 'qa_review': r.qaReview += n; break;
+    case 'pool_empty': r.poolEmpty += n; break;
+  }
+}
+
+/** Event counts since `since` (DB time), e.g. over a storm run. */
+export async function eventCountsSince(since: Date): Promise<LiveRates> {
+  const r = await pool().query(
+    `SELECT event, detail->>'by' AS by, coalesce(detail->>'revived' = 'true', false) AS revived, count(*)::int AS n
+     FROM claim_events WHERE at >= $1 GROUP BY 1, 2, 3`,
+    [since],
+  );
+  const out = emptyRates();
+  for (const row of r.rows) addEvent(out, row.event, row.by, row.revived, row.n);
+  return out;
+}
+
+export type Live = LiveInvariant & {
+  dbNow: Date;
+  liveLeases: number;
+  /** event counts over the last `rateWindowSeconds` */
+  rates: LiveRates;
+  rateWindowSeconds: number;
+  /** claims and expiries per bucket, oldest first; the last bucket is the current (partial) one */
+  series: { bucketSeconds: number; claims: number[]; expired: number[] };
+  queryMs: number;
+};
+
+/** Everything the Live card shows, in three small parallel queries. */
+export async function live(windowMinutes = 30): Promise<Live> {
+  const t = performance.now();
+  const BUCKET = 5, BUCKETS = 36, RATE = 60; // 3 min of 5 s buckets; rates over the last 60 s
+  const [inv, ev, now] = await Promise.all([
+    liveInvariant(windowMinutes),
+    pool().query(
+      `SELECT floor(EXTRACT(EPOCH FROM (now() - at)) / $2)::int AS b, event, detail->>'by' AS by,
+              coalesce(detail->>'revived' = 'true', false) AS revived, count(*)::int AS n
+       FROM claim_events WHERE at > now() - make_interval(secs => $1)
+       GROUP BY 1, 2, 3, 4`,
+      [BUCKET * BUCKETS, BUCKET],
+    ),
+    pool().query(
+      `SELECT now() AS now, (SELECT count(*) FROM scripts WHERE status = 'claimed' AND lease_expires_at > now())::int AS live`,
+    ),
+  ]);
+  const rates = emptyRates();
+  const claims = new Array<number>(BUCKETS).fill(0);
+  const expired = new Array<number>(BUCKETS).fill(0);
+  for (const row of ev.rows) {
+    const b = Math.min(BUCKETS - 1, Math.max(0, row.b)); // b = buckets ago (0 = current)
+    if (row.event === 'claimed') claims[BUCKETS - 1 - b] += row.n;
+    if (row.event === 'expired') expired[BUCKETS - 1 - b] += row.n;
+    if (row.b * BUCKET < RATE) addEvent(rates, row.event, row.by, row.revived, row.n);
+  }
+  return {
+    ...inv,
+    dbNow: now.rows[0].now,
+    liveLeases: now.rows[0].live,
+    rates,
+    rateWindowSeconds: RATE,
+    series: { bucketSeconds: BUCKET, claims, expired },
+    queryMs: Math.round((performance.now() - t) * 10) / 10,
+  };
+}
