@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { Client } from 'pg';
+import { scriptBodies } from './sentences';
 
 export const LANGUAGES = [
   'en', 'es', 'hi', 'pt', // popular: ~80% of contributors
@@ -63,11 +64,11 @@ export async function seed(opts: SeedOptions = {}): Promise<void> {
     for (const lang of LANGUAGES) {
       const n = opts.scriptsByLanguage?.[lang] ?? perLang;
       if (n <= 0) continue;
+      // ORDER BY ord: ids follow array order, so script #1.. of a language are the distinct first pass
       await c.query(
         `INSERT INTO scripts (language, body)
-         SELECT $1::text, format('[%s #%s] Please read this sentence clearly at a natural pace, number %s.', $1::text, g, g)
-         FROM generate_series(1, $2::int) g`,
-        [lang, n],
+         SELECT $1::text, b FROM unnest($2::text[]) WITH ORDINALITY AS t(b, ord) ORDER BY ord`,
+        [lang, scriptBodies(lang, n)],
       );
     }
     await c.query('ANALYZE');
