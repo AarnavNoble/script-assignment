@@ -27,7 +27,8 @@ import { SENTENCES } from '../db/sentences';
 import { encodeWav } from '../lib/wav';
 import { transcribe } from '../lib/transcribe';
 import { errorRate, verdictFor, SCRIPT_THRESHOLDS, type Metric, type ScriptThreshold, type ScriptVerdict } from '../lib/scriptmatch';
-import { analyze } from '../lib/checks';
+import { analyze, type Verdict, type Check } from '../lib/checks';
+import { audioOptions, combineScript, type ScriptCheck } from '../lib/qa';
 import { VOICES, synth, loadPcm, addNoise, makeTake, firstHalf, pool, speechId, type SpeechKey } from './lib/speech';
 import { makeRng, deriveSeed } from './lib/rng';
 
@@ -58,7 +59,7 @@ type Case = {
   id: string; lang: string; kind: Kind; idx: number;
   expected: string; spoken: SpeechKey; spokenLang: string; snrDb?: number; seed: number;
 };
-type Result = Case & { transcript: string | null; ms: number | null; durationS: number; wer: number; cer: number; audioVerdict: string };
+type Result = Case & { transcript: string | null; ms: number | null; durationS: number; wer: number; cer: number; audioVerdict: Verdict; audioReasons: string[]; audioChecks: Check[] };
 
 function args() {
   const a = process.argv.slice(2);
@@ -69,6 +70,7 @@ function args() {
     url: get('--url') ?? process.env.WHISPER_URL ?? 'http://127.0.0.1:8178',
     fresh: a.includes('--fresh'),
     qa: a.includes('--qa'),
+    label: get('--label') ?? 'after',
   };
 }
 
@@ -195,11 +197,11 @@ async function main() {
     }
     if (++done % 250 === 0) console.log(`[eval] transcribed ${done}/${cases.length} (${fresh} new)`);
     const heard = hit.transcript ?? '';
-    const a = analyze({ sampleRate: SR, samples: take });
+    const a = analyze({ sampleRate: SR, samples: take }, audioOptions(c.expected, c.lang)); // what the QA worker runs
     return {
       ...c, transcript: hit.transcript, ms: hit.ms, durationS: take.length / SR,
       wer: errorRate(c.expected, heard, c.lang, 'wer'), cer: errorRate(c.expected, heard, c.lang, 'cer'),
-      audioVerdict: a.verdict,
+      audioVerdict: a.verdict, audioReasons: a.reasons, audioChecks: a.metrics.checks.filter((x) => x.status !== 'pass'),
     };
   });
   console.log(`[eval] transcripts: ${fresh} new, ${cases.length - fresh} cached (${((Date.now() - tAsr) / 1000).toFixed(0)} s)`);
@@ -276,16 +278,16 @@ async function main() {
   line();
   line(`**All numbers below are cross-validated**: each take is judged with thresholds chosen on the other half of that language's sentences (even vs odd), so no take is scored by thresholds fit to it. Bengali is excluded from the headline because the check is switched off for it (see below).`);
   line();
-  line('## Headline');
+  line('## Headline: script check alone');
   line();
   const wrongN = oh.nWrong, corrN = oh.nCorrect;
-  line(`Without this check a person has to listen to every take to confirm it matches the script. With it, **only ${(100 * mix(oh)).toFixed(1)}% go to review** (at a realistic mix of 95% correct / 5% wrong readings; ${pct(oh.correct.review + oh.wrong.review, corrN + wrongN)} of this eval's 50/50 mix); **wrong readings caught: ${pct(oh.wrong.fail, wrongN)}** (${pct(oh.wrong.review, wrongN)} sent to review, ${pct(oh.wrong.pass, wrongN)} slipped through); **correct readings wrongly rejected: ${pct(oh.correct.fail, corrN)}** (${oh.correct.fail} of ${corrN}).`);
+  line(`Without this check a person has to listen to every take to confirm it matches the script. With it, **only ${(100 * mix(oh)).toFixed(1)}% go to review**, i.e. that share of all takes is still routed to a person (baseline: 100%), assuming 95% of takes are correct readings and 5% wrong (${pct(oh.correct.review + oh.wrong.review, corrN + wrongN)} at this eval's 50/50 mix); **wrong readings caught: ${pct(oh.wrong.fail, wrongN)}** (${pct(oh.wrong.review, wrongN)} sent to review, ${pct(oh.wrong.pass, wrongN)} slipped through); **correct readings wrongly rejected: ${pct(oh.correct.fail, corrN)}** (${oh.correct.fail} of ${corrN}).`);
   line();
   line(`${nLang} languages. Correct readings: ${pct(oh.correct.pass, corrN)} approved, ${pct(oh.correct.review, corrN)} to review, ${pct(oh.correct.fail, corrN)} rejected (n = ${corrN}). Wrong readings: ${pct(oh.wrong.fail, wrongN)} rejected, ${pct(oh.wrong.review, wrongN)} to review, ${pct(oh.wrong.pass, wrongN)} approved (n = ${wrongN}). With the shipped thresholds (fit on all sentences, so optimistic): correct ${pct(oShip.correct.pass, corrN)} / ${pct(oShip.correct.review, corrN)} / ${pct(oShip.correct.fail, corrN)}, wrong ${pct(oShip.wrong.fail, wrongN)} rejected / ${pct(oShip.wrong.review, wrongN)} / ${pct(oShip.wrong.pass, wrongN)} approved. Counting Bengali as 100% review: ${(100 * mix(ohAll)).toFixed(1)}% to review overall.`);
   line();
   line(`Transcription time per take: **p50 ${q(ms, 0.5)} ms, p95 ${q(ms, 0.95)} ms** (takes ${q(durs, 0.5).toFixed(1)} s median, ${q(durs, 0.95).toFixed(1)} s p95; one whisper-server, 4 threads, Metal; measured on the run that produced the cached transcripts). Bengali, had it not been switched off: p50 ${q(msBn, 0.5)} ms. ${results.filter((r) => r.transcript === null).length} transcription failures.`);
   line();
-  line('## Per language');
+  line('## Per language (script check)');
   line();
   line('Cross-validated outcomes; thresholds are the shipped ones (fit on all sentences).');
   line();
@@ -338,15 +340,61 @@ async function main() {
     line(SKIP_LANGS.has(lang) ? `| ${lang} | check off | | |` : `| ${lang} | ${c.pass} | ${c.fail ?? 'never'} | ${c.cost} |`);
   }
   line();
-  line('**Bengali: check off.** Whisper-small does not produce Bengali: correct readings come back as junk, Devanagari or other scripts (error ~1.0 for correct and wrong alike), and each take costs ~5 s. With no signal, the check could only send every Bengali take to review, so it is switched off for bn (the take is decided on the audio checks, as before, and the skip is recorded in its checks). A larger Whisper model is the fix; see caveats.');
+  line('**Bengali: check off (review-only would be the alternative).** Whisper-small does not produce Bengali. Raw transcripts of correct readings are repetition loops in Telugu script (`వారిల్ల్ల్...`); on an unpadded clip it heard the words but wrote them in Devanagari. It is not the normalization (Bengali vowel signs and virama survive it; only nukta is folded, on both sides). A fixed generic Bengali prompt made it write Bengali script but the content stayed a loop (CER 1.5-2.2), and Whisper\'s temperature fallback produced random English / Telugu at ~7 s per take. Error ~1.0 for correct and wrong alike, ~5 s per take. With no signal, the check could only send every Bengali take to review, so it is switched off for bn (the take is decided on the audio checks, as before, and the skip is recorded in its checks). A larger Whisper model is the fix; see caveats.');
   line();
   line('**Swahili: untested** (no TTS voice). It gets approve if CER <= 0.1 and never rejects: a take that doesn\'t match closely goes to review.');
   line();
-  line('## Audio checks on the same takes');
-  line();
-  const audioReview = results.filter((r) => r.audioVerdict !== 'pass');
-  line(`The existing audio checks (lib/checks.ts) flag ${pct(audioReview.length, results.length)} of these takes on their own (${audioReview.filter((r) => r.audioVerdict === 'fail').length} fail, ${audioReview.filter((r) => r.audioVerdict === 'review').length} review), almost all for duration < 5 s: the seed scripts are one sentence, read in 2-6 s. That is independent of the script check and not counted above; with one-sentence scripts the duration rule, not the script check, would dominate the review queue.`);
-  line();
+  // ---- QA overall: audio checks + script check, combined exactly as lib/qa.ts decide() does ----
+  // (duplicate checks aside: every eval take is distinct). Script verdicts are the cross-validated ones.
+  const overall = new Map<Result, { verdict: Verdict; reasons: string[] }>();
+  for (const r of results) {
+    const sv = SKIP_LANGS.has(r.lang) || r.audioVerdict === 'fail' ? null : cv.get(r)!;
+    const sc: ScriptCheck | null = sv === null ? null : { name: 'script_match', value: 0, threshold: '', status: sv === 'fail' ? 'fail' : sv === 'review' ? 'warn' : 'pass' };
+    overall.set(r, combineScript({ verdict: r.audioVerdict, reasons: r.audioReasons, checks: r.audioChecks }, sc));
+  }
+  const audioCounts = (rows: Result[]) => ({ n: rows.length, pass: rows.filter((r) => r.audioVerdict === 'pass').length, review: rows.filter((r) => r.audioVerdict === 'review').length, fail: rows.filter((r) => r.audioVerdict === 'fail').length });
+  type Share = { approve: number; review: number; reject: number };
+  const shares = (rows: Result[]): { correct: Share; wrong: Share; mix: Share; n: number } => {
+    const sh = (xs: Result[]): Share => {
+      const n = xs.length || 1;
+      const c = (v: Verdict) => xs.filter((r) => overall.get(r)!.verdict === v).length / n;
+      return { approve: c('pass'), review: c('review'), reject: c('fail') };
+    };
+    const c = sh(rows.filter((r) => isCorrect(r.kind))), w = sh(rows.filter((r) => !isCorrect(r.kind)));
+    const m = (k: keyof Share) => 0.95 * c[k] + 0.05 * w[k];
+    return { correct: c, wrong: w, mix: { approve: m('approve'), review: m('review'), reject: m('reject') }, n: rows.length };
+  };
+  const reasonCounts = (rows: Result[]) => {
+    const m: Record<string, number> = {};
+    for (const r of rows) for (const x of overall.get(r)!.verdict === 'pass' ? [] : overall.get(r)!.reasons) m[x] = (m[x] ?? 0) + 1;
+    return m;
+  };
+  const qaOverall = {
+    label: o.label,
+    all: shares(results),
+    perLang: Object.fromEntries(o.langs.map((l) => [l, shares(results.filter((r) => r.lang === l))])),
+    reasonsCorrect: reasonCounts(results.filter((r) => isCorrect(r.kind))),
+  };
+  writeFileSync(join(RESULTS, `script-check-qa-overall.${o.label}.json`), JSON.stringify(qaOverall, null, 1) + '\n');
+  const beforePath = join(RESULTS, 'script-check-qa-overall.before.json');
+  const before = o.label !== 'before' && existsSync(beforePath) ? (JSON.parse(readFileSync(beforePath, 'utf8')) as typeof qaOverall) : null;
+  const p1 = (x: number) => `${(100 * x).toFixed(1)}%`;
+  const triple = (x: Share) => `${p1(x.approve)} / ${p1(x.review)} / ${p1(x.reject)}`;
+  const topReasons = (m: Record<string, number>) => Object.entries(m).sort((a, b) => b[1] - a[1]).slice(0, 5).map(([k, v]) => `${k} ${v}`).join(', ') || 'none';
+  md.splice(md.indexOf('## Per language (script check)'), 0,
+    '## QA overall (audio checks + script check)', '',
+    `What the whole QA step does with these takes: the audio checks (lib/checks.ts, with the options lib/qa.ts passes) combined with the script check exactly as the worker combines them. All 15 languages; for Bengali only the audio checks run. Shares of all takes as approved / sent to a person / rejected. Baseline without automatic QA: 100% to a person.`, '',
+    `**QA overall, 95% correct / 5% wrong mix: ${p1(qaOverall.all.mix.review)} of all takes go to a person** (approved ${p1(qaOverall.all.mix.approve)}, rejected ${p1(qaOverall.all.mix.reject)})${before ? `; before the script-aware audio rules: ${p1(before.all.mix.review)} to a person (approved ${p1(before.all.mix.approve)}, rejected ${p1(before.all.mix.reject)})` : ''}. Correct readings alone: ${triple(qaOverall.all.correct)}${before ? ` (before: ${triple(before.all.correct)})` : ''}. Wrong readings: ${triple(qaOverall.all.wrong)}${before ? ` (before: ${triple(before.all.wrong)})` : ''}.`, '',
+    `Why correct readings were not approved: ${topReasons(qaOverall.reasonsCorrect)}${before ? ` (before: ${topReasons(before.reasonsCorrect)})` : ''}.`, '',
+    `What changed (lib/checks.ts): "too short" is now judged against the script's expected reading time (letters at a per-language read-aloud pace, calibrated on these voices) instead of < 5 s, with absolute floors (< 1 s fails; without script text < 2 s fails, < 3 s review); "mostly silent" is measured between the first and last word, so room tone at the ends is left to the padding rule; and a take whose script check passed is not sent to review for being short (the transcript shows the whole text was read; hard fails and "too long" still count). On their own, the audio checks now pass ${audioCounts(results.filter((r) => isCorrect(r.kind))).pass} of ${results.filter((r) => isCorrect(r.kind)).length} correct readings, so the waiver is a safety net for real fast readers, not what drives this number; and they flag ${(() => { const c = audioCounts(results.filter((r) => r.kind === 'partial')); return `${c.fail + c.review} of ${c.n} half readings (${c.fail} fail, ${c.review} review)`; })()} by length alone, which still protects Bengali and takes with no transcript. Regression: the synthetic silent / clipped / too short / padded / lengthened takes (scripts/qa-demo.ts) still fail, and the borderline ones still go to review.`, '',
+    `| Lang | Correct takes: approved / review / rejected${before ? ' (before -> after)' : ''} | 95/5 mix: to a person${before ? ' (before -> after)' : ''} | 95/5 mix: rejected${before ? ' (before -> after)' : ''} |`,
+    '|---|---|---|---|',
+    ...o.langs.map((l) => {
+      const a = qaOverall.perLang[l], b = before?.perLang[l];
+      return `| ${l}${SKIP_LANGS.has(l) ? ' (audio only)' : ''} | ${b ? `${triple(b.correct)} -> ` : ''}${triple(a.correct)} | ${b ? `${p1(b.mix.review)} -> ` : ''}**${p1(a.mix.review)}** | ${b ? `${p1(b.mix.reject)} -> ` : ''}${p1(a.mix.reject)} |`;
+    }),
+    `| **all** | ${before ? `${triple(before.all.correct)} -> ` : ''}${triple(qaOverall.all.correct)} | ${before ? `${p1(before.all.mix.review)} -> ` : ''}**${p1(qaOverall.all.mix.review)}** | ${before ? `${p1(before.all.mix.reject)} -> ` : ''}${p1(qaOverall.all.mix.reject)} |`,
+    '');
   md.push('<!-- EXTRA -->');
   line();
   line('## How the check works');
@@ -361,6 +409,7 @@ async function main() {
   line('- **Few voices in some languages** (one voice for hi, ar, bn, id, tr, vi, pl): the slow / fast / noisy variants are the same speaker.');
   line('- **Thresholds come from 30 sentences per language** (180 takes, 15 per fold); the "thresholds per fold" column shows how much they move between halves. Cross-validation keeps the reported rates honest about that.');
   line('- **Swahili is untested** (no voice): review-only policy. **Bengali is not covered** (check off). A larger model (ggml-medium / large-v3) would likely fix Bengali and tighten Hindi and Korean, at roughly 3-10x the time per take; that is a model swap (`npm run whisper` points at the file) plus a re-run of this eval.');
+  line('- **Expected reading time is calibrated on TTS** (slowed x0.7 to a typical read-aloud pace). A very fast human reader, or a script whose language reads faster than its letter count suggests, can land under 0.4x; with a passing script check that is waived, without one it goes to review. Children and slow readers land at 1-2x, far from the 3x review line.');
   line('- The wrong readings here are blunt (a whole other sentence, half a sentence, another language). Subtler errors (one skipped word, a misread number) mostly land in review or pass: at a WER pass threshold of p, a 12-word script tolerates floor(12 p) wrong words.');
   const extraPath = join(RESULTS, 'script-check.extra.md');
   writeFileSync(join(RESULTS, 'script-check.md'), md.join('\n') + '\n');

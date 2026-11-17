@@ -93,23 +93,30 @@ export function noiseOnly(o: { sr?: number; seconds?: number; levelDb?: number; 
   return { sampleRate: sr, samples: out };
 }
 
-/** Named variants used by the tests and the demo. */
+/**
+ * Named variants used by the tests and the demo. Each speech variant is a take of a script whose
+ * expected reading time is SCRIPT_S (the synthetic speech lasts 10 s), as in production where QA
+ * always has the script text; the no-script fallback is tested separately.
+ */
+const SCRIPT_S = 10;
 export function variants(sr = 48000): Record<string, { pcm: Pcm; expectedS?: number }> {
+  const take = (o: SpeechOpts = {}) => ({ pcm: speech({ sr, ...o }), expectedS: SCRIPT_S });
   return {
-    normal: { pcm: speech({ sr }) },
-    silent: { pcm: noiseOnly({ sr }) },
-    digital_zero: { pcm: { sampleRate: sr, samples: new Float32Array(sr * 10) } },
-    quiet: { pcm: speech({ sr, levelDb: -40 }) },
-    hiss_no_speech: { pcm: noiseOnly({ sr, levelDb: -47 }) },
-    whisper: { pcm: speech({ sr, levelDb: -62 }) },
-    clipped_heavy: { pcm: speech({ sr, gain: 25 }) },
-    clipped_mild: { pcm: speech({ sr, levelDb: -12, gain: 1.4 }) },
-    too_short: { pcm: speech({ sr, seconds: 1.5, lead: 0.2, trail: 0.2 }) },
-    short_borderline: { pcm: speech({ sr, seconds: 3.5, lead: 0.3, trail: 0.4 }) },
-    padded: { pcm: speech({ sr, lead: 5, trail: 5 }) },
-    padded_heavy: { pcm: speech({ sr, lead: 20, trail: 20 }) },
-    long_pause: { pcm: speech({ sr, midGapS: 8 }) },
-    cut_off: { pcm: speech({ sr, trail: 0, seconds: 10.1 }) },
-    lengthened: { pcm: speech({ sr, seconds: 30 }), expectedS: 6 },
+    normal: take(),
+    silent: { pcm: noiseOnly({ sr }), expectedS: SCRIPT_S },
+    digital_zero: { pcm: { sampleRate: sr, samples: new Float32Array(sr * 10) }, expectedS: SCRIPT_S },
+    quiet: take({ levelDb: -40 }),
+    hiss_no_speech: { pcm: noiseOnly({ sr, levelDb: -47 }), expectedS: SCRIPT_S },
+    whisper: take({ levelDb: -62 }),
+    clipped_heavy: take({ gain: 25 }),
+    clipped_mild: take({ levelDb: -12, gain: 1.4 }),
+    too_short: take({ seconds: 1.5, lead: 0.2, trail: 0.2 }), // 0.15x the script: fail
+    short_borderline: take({ seconds: 3.5, lead: 0.3, trail: 0.4 }), // 0.35x: review
+    padded: take({ lead: 5, trail: 5 }),
+    padded_heavy: take({ lead: 20, trail: 20 }),
+    long_pause: take({ midGapS: 8 }),
+    cut_off: take({ trail: 0, seconds: 10.1 }),
+    lengthened: take({ seconds: 35 }), // 3.5x the script: review
+    lengthened_heavy: take({ seconds: 70 }), // 7x: fail
   };
 }

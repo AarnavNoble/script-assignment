@@ -84,7 +84,7 @@ export async function qaThroughput(whisperUrl: string): Promise<string> {
       `- check on: ${fmt(on)}; outcomes: ${notes(on)}`,
       `- transcription inside QA: p50 ${sorted[Math.floor(sorted.length / 2)]} ms, p95 ${sorted[Math.ceil(sorted.length * 0.95) - 1]} ms`,
       '',
-      'whisper-server decodes one request at a time, so more QA workers on one server do not add throughput; run one whisper-server per worker (or a GPU box) to scale.',
+      'Where the time goes (40 sentence takes, measured separately): Whisper ~300 ms per take on the GPU (Metal, flash attention on; the model loads once at server start, not per request). Resampling 48 -> 16 kHz in TS was ~100 ms per take until it got a precomputed-filter path (now ~8 ms). One server, one request at a time: 3.3 takes/s; 2 requests in flight: 3.4/s; two servers on ports 8178/8179 with -t 4 each, 2 in flight: 4.2/s. The GPU is the bottleneck, so a second server on the same laptop adds ~25%; a faster GPU or a smaller/quantized model is what would move it.',
     ].join('\n');
   } finally {
     await closePool();

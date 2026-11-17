@@ -9,6 +9,7 @@ import { putObject, recordingKey } from '@/lib/storage';
 import { encodeWav } from '@/lib/wav';
 import { runQaOnce, QA_DUP_NS } from '@/lib/qa';
 import { SCRIPT_THRESHOLDS } from '@/lib/scriptmatch';
+import { expectedDurationS } from '@/lib/checks';
 import type { Transcriber } from '@/lib/transcribe';
 import { speech, noiseOnly } from './synth';
 
@@ -134,6 +135,28 @@ describe('script_match in runQaOnce', () => {
     expect(r.status).toBe('approved');
     expect(scriptCheck(r)).toMatchObject({ status: 'pass', value: null });
     expect(scriptCheck(r).threshold).toMatch(/skipped: .*Bengali/);
+  });
+
+  it('a short take whose script check passes is approved (waiver recorded); without a transcript it goes to review', async () => {
+    // takes of 0.35x their script's expected reading time: "truncated" for the audio checks alone
+    const shortTake = async (seed: number) => {
+      const c = await claim(who, 'en');
+      if (c.status === 'empty') throw new Error('pool empty');
+      const wav = encodeWav(speech({ seed, seconds: 0.35 * expectedDurationS(c.body, 'en'), lead: 0.4, trail: 0.4 }));
+      await putObject(recordingKey(c.scriptId, c.token), wav);
+      return { id: (await submit(who++, c.token)).recordingId, body: c.body, wav };
+    };
+    const heard = await shortTake(271);
+    const unheard = await shortTake(272);
+    const { t } = fake(new Map<string, string | null | Error>([[sha(heard.wav), heard.body], [sha(unheard.wav), null]]));
+    await runQaOnce({ limit: 10, logger: quiet, transcriber: t });
+    const r = await rec(heard.id);
+    expect(r.status).toBe('approved');
+    const el = (r.checks as Rec[]).find((x) => x.name === 'expected_length')!;
+    expect(el).toMatchObject({ status: 'pass', reason: 'truncated' });
+    expect(el.threshold).toMatch(/waived/);
+    // no transcript (transcriber down): nothing confirms the text is complete -> review
+    expect(await rec(unheard.id)).toMatchObject({ status: 'needs_review', review_note: 'truncated' });
   });
 
   it('transcribes outside the per-hash duplicate lock', async () => {

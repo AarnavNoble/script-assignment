@@ -80,9 +80,37 @@ describe('analyze() on synthetic signals (48 kHz)', () => {
     expect(a.verdict).toBe('pass');
   });
 
-  it('too short fails; 3-5 s goes to review', () => {
-    expect(run('too_short')).toMatchObject({ verdict: 'fail', reasons: ['too_short'] });
-    expect(run('short_borderline')).toMatchObject({ verdict: 'review', reasons: ['too_short'] });
+  it('too short for the script fails (< 0.3x); 0.3-0.4x goes to review', () => {
+    expect(run('too_short')).toMatchObject({ verdict: 'fail', reasons: ['truncated'] });
+    expect(check(run('too_short'), 'expected_length')?.status).toBe('fail');
+    expect(run('short_borderline')).toMatchObject({ verdict: 'review', reasons: ['truncated'] });
+  });
+
+  it('a one-sentence take with natural room tone passes: 3.5 s of speech, 1 s each end, script needs ~4 s', () => {
+    // the old absolute rules sent this to review twice over (duration < 5 s; > 50% of frames silent)
+    const a = analyze(viaWav(speech({ seconds: 3.5, lead: 1.0, trail: 1.0, seed: 9 })), { expectedS: 4 });
+    expect(a.metrics.durationS).toBeLessThan(5.6);
+    expect(a.verdict).toBe('pass');
+    expect(check(a, 'expected_length')?.status).toBe('pass');
+    expect(check(a, 'silence_ratio')?.status).toBe('pass');
+  });
+
+  it('absolute floor with a script: under 1 s fails', () => {
+    const a = analyze(viaWav(speech({ seconds: 0.5, lead: 0.1, trail: 0.1 })), { expectedS: 0.5 });
+    expect(check(a, 'duration')).toMatchObject({ status: 'fail', reason: 'too_short' });
+  });
+
+  it('without script text: < 2 s fails, 2-3 s goes to review, 3+ s passes', () => {
+    expect(analyze(viaWav(speech({ seconds: 1.4, lead: 0.2, trail: 0.2 })))).toMatchObject({ verdict: 'fail', reasons: ['too_short'] });
+    expect(analyze(viaWav(speech({ seconds: 2.0, lead: 0.2, trail: 0.3 })))).toMatchObject({ verdict: 'review', reasons: ['too_short'] });
+    expect(analyze(viaWav(speech({ seconds: 3.0, lead: 0.3, trail: 0.4 }))).verdict).toBe('pass');
+  });
+
+  it('silence is judged inside the speech span: room tone at the ends is the padding rule, not mostly_silent', () => {
+    const a = analyze(viaWav(speech({ seconds: 3, lead: 2.5, trail: 2.5, seed: 3 })), { expectedS: 3.5 });
+    expect(a.metrics.silenceRatio).toBeGreaterThan(0.5); // most of the take is room tone
+    expect(check(a, 'silence_ratio')?.status).toBe('pass');
+    expect(a.verdict).toBe('pass');
   });
 
   it('too long fails (> 10 min)', () => {
@@ -127,11 +155,21 @@ describe('analyze() on synthetic signals (48 kHz)', () => {
     expect(a.reasons).toEqual(['lengthened']);
     // and without an expected length the same audio passes
     expect(analyze(v.lengthened.pcm).verdict).toBe('pass');
+    // 7x the script fails
+    expect(run('lengthened_heavy')).toMatchObject({ verdict: 'fail', reasons: ['lengthened'] });
   });
 
-  it('expectedDurationS uses 2.5 words/s', () => {
-    expect(expectedDurationS('one two three four five')).toBe(2);
-    expect(expectedDurationS('  ')).toBe(0);
+  it('expectedDurationS: letters at a per-language read-aloud pace (~2.5 English words/s)', () => {
+    const en = 'Could you tell me how to get to the nearest train station?'; // 12 words
+    expect(expectedDurationS(en, 'en')).toBeGreaterThan(12 / 2.5 - 1);
+    expect(expectedDurationS(en, 'en')).toBeLessThan(12 / 2.5 + 1);
+    expect(expectedDurationS('  ', 'en')).toBe(0);
+    expect(expectedDurationS('Hello, world!!!', 'en')).toBe(expectedDurationS('Hello world', 'en')); // punctuation ignored
+    // unspaced Japanese gets a sane length too (37 characters -> several seconds, not "1 word")
+    const ja = expectedDurationS('天気予報によると、今日の午後は雨が降るそうなので、傘を持っていってください。', 'ja');
+    expect(ja).toBeGreaterThan(5);
+    expect(ja).toBeLessThan(12);
+    expect(expectedDurationS('abc def', 'xx')).toBeGreaterThan(0); // unknown language: fallback rate
   });
 
   it('every check row has name/status/threshold, and fail reasons outrank warn reasons', () => {

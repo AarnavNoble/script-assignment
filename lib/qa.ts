@@ -19,7 +19,7 @@ import type { PoolClient } from 'pg';
 import { pool } from './db';
 import { getObjectBytes } from './storage';
 import { decodeWav } from './wav';
-import { analyze, expectedDurationS, type Check } from './checks';
+import { analyze, expectedDurationS, type Check, type Analysis, type AnalyzeOptions, type Verdict } from './checks';
 import { saveMetrics, approve, reject, sendToReview } from './review';
 import { AppError } from './errors';
 import { config } from './config';
@@ -154,11 +154,7 @@ async function processOne(row: Row, c: PoolClient, transcriber: Transcriber | nu
     return 'rejected';
   }
 
-  // Script-length check is opt-in: the seed scripts are one-sentence placeholders (~5 s to read)
-  // while takes are modeled on the exercise's ~3 min, so it would flag every take as lengthened.
-  // Turn it on (QA_CHECK_SCRIPT_LENGTH=1) once script bodies match the expected recording length.
-  const useScriptLength = process.env.QA_CHECK_SCRIPT_LENGTH === '1' && row.body;
-  const a = analyze(pcm, { expectedS: useScriptLength ? expectedDurationS(row.body!) : undefined });
+  const a = analyze(pcm, audioOptions(row.body, row.language));
   // Save first: the duplicate lookup below relies on our own hash being visible to other workers.
   await saveMetrics(row.id, a.metrics);
 
@@ -211,14 +207,45 @@ async function scriptCheck(row: Row, wav: Buffer, a: ReturnType<typeof analyze>,
   };
 }
 
-async function decide(row: Row, a: ReturnType<typeof analyze>, script: ScriptCheck | null = null): Promise<Decision> {
-  const reasons = [...a.reasons];
-  let verdict = a.verdict;
-  const extra: Check[] = [];
+/**
+ * analyze() options for a take of this script (shared with sim/script-eval.ts, so the eval measures
+ * what QA does). With script text, "too short / too long" is judged against the script's expected
+ * reading time (lib/checks.ts expectedLength); QA_CHECK_SCRIPT_LENGTH=0 falls back to absolute bounds.
+ */
+export function audioOptions(body: string | null, language: string | null): AnalyzeOptions {
+  if (process.env.QA_CHECK_SCRIPT_LENGTH === '0' || !body?.trim()) return {};
+  const expectedS = expectedDurationS(body, language ?? 'en');
+  return expectedS > 0 ? { expectedS } : {};
+}
 
-  // Script check, combined like the audio checks: any fail rejects, else any warn sends to review.
+/**
+ * Combine the audio verdict with the script check, like the audio checks combine among themselves:
+ * any fail rejects, else any warn sends to review. Pure (shared with sim/script-eval.ts).
+ *
+ * One waiver: when the script check PASSED (Whisper heard the script, within the language's
+ * threshold), a "shorter than expected" warning (expected_length < 0.4x, or the no-script duration
+ * floor) is not sent to review. "Too short" exists to catch skipped or cut-off text, and the
+ * transcript already shows the text is all there, so a short take is a fast reader. Hard fails
+ * (< 0.3x, < 1 s) and "too long" (padding / lengthening for pay, which a transcript can't show) still count.
+ */
+export function combineScript(
+  a: Pick<Analysis, 'verdict' | 'reasons'> & { checks?: Check[] },
+  script: ScriptCheck | null,
+): { verdict: Verdict; reasons: string[]; waived: string[] } {
+  let verdict = a.verdict;
+  let reasons = [...a.reasons];
+  const waived: string[] = [];
+  if (script?.status === 'pass' && script.value !== null && a.checks && verdict === 'review') {
+    const isShort = (c: Check) => c.status === 'warn' && ((c.name === 'expected_length' && c.reason === 'truncated') || (c.name === 'duration' && c.reason === 'too_short'));
+    const warns = a.checks.filter((c) => c.status === 'warn');
+    if (warns.some(isShort)) {
+      for (const c of warns.filter(isShort)) waived.push(c.name);
+      const rest = warns.filter((c) => !isShort(c));
+      verdict = rest.length ? 'review' : 'pass';
+      reasons = [...new Set(rest.map((c) => c.reason ?? c.name))];
+    }
+  }
   if (script) {
-    extra.push(script);
     if (script.status === 'fail') {
       if (verdict !== 'fail') reasons.length = 0;
       reasons.push('wrong_script');
@@ -227,6 +254,22 @@ async function decide(row: Row, a: ReturnType<typeof analyze>, script: ScriptChe
       if (verdict === 'pass') reasons.length = 0;
       reasons.push('script_mismatch');
       verdict = 'review';
+    }
+  }
+  return { verdict, reasons, waived };
+}
+
+async function decide(row: Row, a: ReturnType<typeof analyze>, script: ScriptCheck | null = null): Promise<Decision> {
+  const combined = combineScript({ ...a, checks: a.metrics.checks }, script);
+  const reasons = combined.reasons;
+  let verdict = combined.verdict;
+  const extra: Check[] = [];
+  if (script) extra.push(script);
+  // record the waiver on the waived checks, so the ops view shows why a short take was approved
+  for (const c of a.metrics.checks) {
+    if (combined.waived.includes(c.name) && c.status === 'warn') {
+      c.status = 'pass';
+      c.threshold += ' (waived: the script check heard the whole script)';
     }
   }
 

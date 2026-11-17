@@ -2,9 +2,9 @@
 //
 // Every check maps to a common speech-data rejection reason
 // ("inaudible, silent, truncated or distorted; padded, duplicated or lengthened"):
-//   duration        -> truncated (too short) / lengthened (too long)
-//   expected_length -> truncated / lengthened, relative to the script's word count
-//   silence_ratio   -> silent
+//   duration        -> absolute floors / ceilings (< 1 s, > 10 min; < 2-3 s without script text)
+//   expected_length -> truncated / lengthened, relative to the script's expected reading time
+//   silence_ratio   -> silent (whole take) / mostly silent (between the first and last word)
 //   speech_level    -> inaudible
 //   peak_level      -> inaudible (nothing ever gets loud)
 //   clipping        -> distorted
@@ -39,10 +39,12 @@ export const QA_THRESHOLDS = {
   speechMinFrames: 3,
 
   duration: {
-    /** < 3 s: not even one short sentence (the shortest seed script reads in ~5 s). Truncated/empty. */
-    failBelowS: 3,
-    /** 3-5 s: possible for a very short script, worth a human look. */
-    reviewBelowS: 5,
+    /** < 1 s: no sentence fits in a second (a one-word script would still have room tone around it). */
+    failBelowS: 1,
+    /** Without script text only (no expected length to compare against): < 2 s fails, < 3 s goes to
+     *  review. Scripts are single sentences (~2-7 s of speech), so these sit below any real reading.
+     *  With script text, "too short" is judged relative to the script instead (expectedLength). */
+    noScript: { failBelowS: 2, reviewBelowS: 3 },
     /** > 5 min: the exercise's scripts are ~3 min (17 MB WAV); 5 min is already 1.7x that. */
     reviewAboveS: 300,
     /** > 10 min: 58 MB at 48 kHz, above the 50 MB upload cap anyway, and no script is that long.
@@ -50,23 +52,41 @@ export const QA_THRESHOLDS = {
     failAboveS: 600,
   },
 
-  /** Duration vs what the script should take at a normal reading rate (150 wpm = 2.5 words/s).
-   *  Only checked when the caller passes expectedS (lib/qa.ts does so with QA_CHECK_SCRIPT_LENGTH=1).
-   *  Review-only: reading speed varies ~2x between people, so neither direction is safe to
-   *  auto-reject. */
+  /** Speech length vs what the script should take (expectedDurationS). Measured on the speech span
+   *  (first to last speech frame), so room tone at the ends doesn't count; padding has its own rule.
+   *  On by default whenever lib/qa.ts has the script text (QA_CHECK_SCRIPT_LENGTH=0 turns it off).
+   *  Calibration (results/script-check.md): macOS voices at their default rate read at ratio ~0.7,
+   *  at 240 wpm ~0.55, at 140 wpm ~0.8; a half-sentence reading lands at ~0.35. */
   expectedLength: {
-    wordsPerSecond: 2.5,
-    /** < 0.5x: they skipped half the script, or it was cut off. */
-    reviewBelowRatio: 0.5,
-    /** > 3x: slower than any natural read; likely padding or repeated takes ("lengthened"). */
+    /** Speaking rate in letters per second (graphemes with a letter or digit; no spaces or
+     *  punctuation, so unspaced Japanese / Korean and agglutinative languages count the same way),
+     *  measured on macOS voices at their default rate (median of 30 sentences per language)... */
+    ttsLettersPerSecond: {
+      en: 14.5, es: 15.7, hi: 6.9, pt: 12.3, fr: 16.8, de: 13.7, ar: 7.2, bn: 6.0, ja: 5.8, ko: 5.0,
+      id: 12.1, tr: 11.9, vi: 11.0, it: 14.8, pl: 13.4,
+      sw: 12.0, // no voice: assumed like Indonesian (Latin script, similar word structure)
+    } as Record<string, number>,
+    /** ...then slowed to a typical read-aloud pace: TTS reads English at 3.7 words/s, people at ~2.5
+     *  (150 wpm), so x0.7. For English this reproduces the old 2.5 words/s constant. */
+    humanFactor: 0.7,
+    /** Unknown language: a middle-of-the-range rate. */
+    fallbackLettersPerSecond: 12,
+    /** < 0.3x: 3x faster than a typical reader. Nobody reads a whole sentence that fast: truncated or skipped. */
+    failBelowRatio: 0.3,
+    /** < 0.4x: a very fast reader or a cut-off take; a person checks (unless the script check heard the whole script, see lib/qa.ts). */
+    reviewBelowRatio: 0.4,
+    /** > 3x: slower than any natural read; likely repeated takes or stretched audio ("lengthened"). */
     reviewAboveRatio: 3,
+    /** > 6x: a 4 s sentence spread over 25 s of speech: lengthened to inflate pay. */
+    failAboveRatio: 6,
   },
 
   silenceRatio: {
-    /** >= 90% of frames silent: nothing was said (muted mic, wrong input, empty take). */
+    /** >= 90% of the whole take silent: nothing was said (muted mic, wrong input, empty take). */
     failAbove: 0.9,
-    /** 50-90%: read speech is normally 15-40% pauses; over half silent is suspicious but could be
-     *  a slow, careful reader. */
+    /** Review when >= 50% of the SPEECH SPAN (first to last word) is silent: read speech is normally
+     *  15-40% pauses. Measured inside the span because a one-sentence take is mostly room tone at the
+     *  ends (1 s + 3 s of speech + 1 s is 40% silent before any pause); edge silence is the padding rule's job. */
     reviewAbove: 0.5,
   },
 
@@ -164,10 +184,19 @@ export type Analysis = {
   };
 };
 
-/** Expected reading time for a script body at the configured words-per-second. */
-export function expectedDurationS(body: string, t: Thresholds = QA_THRESHOLDS): number {
-  const words = body.trim().split(/\s+/).filter(Boolean).length;
-  return words / t.expectedLength.wordsPerSecond;
+const letterSeg = typeof Intl !== 'undefined' && 'Segmenter' in Intl ? new Intl.Segmenter('und', { granularity: 'grapheme' }) : null;
+/** Letters in a script: grapheme clusters containing a letter or digit (spaces, punctuation excluded). */
+export function scriptLetters(body: string): number {
+  const s = body.normalize('NFC');
+  const gs = letterSeg ? [...letterSeg.segment(s)].map((g) => g.segment) : [...s];
+  return gs.filter((g) => /[\p{L}\p{N}]/u.test(g)).length;
+}
+
+/** Expected speech time for a script at a typical read-aloud pace, seconds (see QA_THRESHOLDS.expectedLength). */
+export function expectedDurationS(body: string, language = 'en', t: Thresholds = QA_THRESHOLDS): number {
+  const E = t.expectedLength;
+  const lps = (E.ttsLettersPerSecond[language] ?? E.fallbackLettersPerSecond) * E.humanFactor;
+  return scriptLetters(body) / lps;
 }
 
 const DB_FLOOR = -120; // instead of -Infinity for digital silence (JSON- and Postgres-safe)
@@ -264,31 +293,43 @@ export function analyze(pcm: Pcm, opts: AnalyzeOptions = {}): Analysis {
   const add = (c: Check) => checks.push(c);
   const D = t.duration;
 
+  // Too short: relative to the script when there is one (expected_length), else absolute floors.
+  const hasScript = !!(opts.expectedS && opts.expectedS > 0);
+  const shortFail = hasScript ? D.failBelowS : D.noScript.failBelowS;
+  const shortReview = hasScript ? D.failBelowS : D.noScript.reviewBelowS;
   add({
     name: 'duration', value: r2(durationS), unit: 's',
-    status: durationS < D.failBelowS || durationS > D.failAboveS ? 'fail'
-      : durationS < D.reviewBelowS || durationS > D.reviewAboveS ? 'warn' : 'pass',
-    threshold: `fail < ${D.failBelowS} or > ${D.failAboveS}; review < ${D.reviewBelowS} or > ${D.reviewAboveS}`,
-    reason: durationS < D.reviewBelowS ? 'too_short' : durationS > D.reviewAboveS ? 'too_long' : undefined,
+    status: durationS < shortFail || durationS > D.failAboveS ? 'fail'
+      : durationS < shortReview || durationS > D.reviewAboveS ? 'warn' : 'pass',
+    threshold: `fail < ${shortFail} or > ${D.failAboveS}; review ${shortReview > shortFail ? `< ${shortReview} or ` : ''}> ${D.reviewAboveS}${hasScript ? ' (short: see expected_length)' : ' (no script text)'}`,
+    reason: durationS < shortReview ? 'too_short' : durationS > D.reviewAboveS ? 'too_long' : undefined,
   });
 
-  if (opts.expectedS && opts.expectedS > 0) {
-    const ratio = durationS / opts.expectedS;
+  if (hasScript && hasSpeech) { // no speech: silence_ratio already fails it
+    // speech span: first to last speech frame (the whole take if no speech was found)
+    const spanS = hasSpeech ? Math.max(0, durationS - leadingSilenceS - trailingSilenceS) : 0;
+    const ratio = spanS / opts.expectedS!;
     const E = t.expectedLength;
+    const short = ratio < E.reviewBelowRatio, long = ratio > E.reviewAboveRatio;
     add({
       name: 'expected_length', value: r2(ratio), unit: 'x expected',
-      status: ratio < E.reviewBelowRatio || ratio > E.reviewAboveRatio ? 'warn' : 'pass',
-      threshold: `review < ${E.reviewBelowRatio}x or > ${E.reviewAboveRatio}x of ${r2(opts.expectedS)} s`,
-      reason: ratio < E.reviewBelowRatio ? 'truncated' : ratio > E.reviewAboveRatio ? 'lengthened' : undefined,
+      status: ratio < E.failBelowRatio || ratio > E.failAboveRatio ? 'fail' : short || long ? 'warn' : 'pass',
+      threshold: `speech ${r2(spanS)} s vs ${r2(opts.expectedS!)} s expected: fail < ${E.failBelowRatio}x or > ${E.failAboveRatio}x; review < ${E.reviewBelowRatio}x or > ${E.reviewAboveRatio}x`,
+      reason: short ? 'truncated' : long ? 'lengthened' : undefined,
     });
   }
 
   const S = t.silenceRatio;
+  // pauses inside the speech span (first to last speech frame)
+  let spanSilent = 0;
+  if (hasSpeech) for (let f = first; f <= last; f++) if (silent(f)) spanSilent++;
+  const internalSilence = hasSpeech ? spanSilent / (last - first + 1) : 1;
+  const silentTake = silenceRatio >= S.failAbove;
   add({
     name: 'silence_ratio', value: r4(silenceRatio),
-    status: silenceRatio >= S.failAbove ? 'fail' : silenceRatio >= S.reviewAbove ? 'warn' : 'pass',
-    threshold: `fail >= ${S.failAbove}; review >= ${S.reviewAbove} (frames < ${t.silenceDb} dBFS)`,
-    reason: silenceRatio >= S.failAbove ? 'silent' : silenceRatio >= S.reviewAbove ? 'mostly_silent' : undefined,
+    status: silentTake ? 'fail' : internalSilence >= S.reviewAbove ? 'warn' : 'pass',
+    threshold: `fail >= ${S.failAbove} of the take; review >= ${S.reviewAbove} of the speech span (now ${r2(internalSilence)}) (frames < ${t.silenceDb} dBFS)`,
+    reason: silentTake ? 'silent' : internalSilence >= S.reviewAbove ? 'mostly_silent' : undefined,
   });
 
   // Speech level is meaningless when there's no speech; silence_ratio already failed in that case.
