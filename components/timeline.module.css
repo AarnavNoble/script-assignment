@@ -1,0 +1,81 @@
+/* Lease timeline: holder palette (stable per contributor id) in light and dark mode. */
+.root {
+  --tl-c0: #2f6bd6;
+  --tl-c1: #8b4fd0;
+  --tl-c2: #13877f;
+  --tl-c3: #c03d7d;
+  --tl-c4: #9b5d20;
+  --tl-c5: #4b57b5;
+  --tl-c6: #0b7fa8;
+  --tl-c7: #c8571f;
+  --tl-grid: rgba(0, 0, 0, 0.06);
+  --tl-future: rgba(0, 0, 0, 0.025);
+}
+.wrap { position: relative; }
+
+@media (prefers-color-scheme: dark) {
+  .root {
+    --tl-c0: #7aa7f5;
+    --tl-c1: #b98cf0;
+    --tl-c2: #5fc9bf;
+    --tl-c3: #ef86b6;
+    --tl-c4: #d9a066;
+    --tl-c5: #9aa3f2;
+    --tl-c6: #5cc8f0;
+    --tl-c7: #f29a6b;
+    --tl-grid: rgba(255, 255, 255, 0.07);
+    --tl-future: rgba(255, 255, 255, 0.03);
+  }
+}
+
+.svg { display: block; width: 100%; overflow: visible; font-family: inherit; }
+.label { font-family: var(--mono); font-size: 11.5px; fill: var(--text); }
+.lang { fill: var(--muted); }
+.tick { font-size: 11px; fill: var(--muted); font-variant-numeric: tabular-nums; }
+.nowLabel { font-size: 11px; fill: var(--accent); font-weight: 600; }
+.row { transition: transform 300ms ease; }
+.seg { cursor: default; }
+.seg:hover .solid { filter: brightness(1.12); }
+
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+.beat { animation: pulse 1.2s ease-in-out infinite; }
+
+.legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  align-items: center;
+  font-size: 12px;
+  color: var(--muted);
+  margin-bottom: 10px;
+}
+.legend span { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
+.legend svg { display: block; }
+
+.empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
+  font-size: 14px;
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+}
+
+.tip {
+  position: absolute;
+  z-index: 5;
+  pointer-events: none;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
+  padding: 8px 10px;
+  font-size: 12.5px;
+  line-height: 1.45;
+  min-width: 200px;
+  max-width: 280px;
+  color: var(--text);
+}
+.tip strong { font-weight: 600; }
+.tip .mono { font-size: 12px; }
