@@ -16,7 +16,9 @@
     "check": "tsx --env-file=.env sim/check.ts",
     "experiments": "tsx --env-file=.env sim/experiments.ts",
     "storm": "tsx --env-file=.env sim/storm.ts",
-    "demo": "tsx --env-file=.env scripts/demo-setup.ts"
+    "demo": "tsx --env-file=.env scripts/demo-setup.ts",
+    "whisper": "whisper-server -m ~/.cache/whisper/ggml-small.bin --port 8178 -t 4",
+    "script-eval": "tsx --env-file=.env sim/script-eval.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1169.0",

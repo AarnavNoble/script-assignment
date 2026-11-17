@@ -1,0 +1,105 @@
+{
+  "chosen": {
+    "en": {
+      "metric": "cer",
+      "pass": 0.15,
+      "fail": 0.55
+    },
+    "es": {
+      "metric": "cer",
+      "pass": 0.1,
+      "fail": 0.3
+    },
+    "hi": {
+      "metric": "cer",
+      "pass": 0.45,
+      "fail": 0.6
+    },
+    "pt": {
+      "metric": "cer",
+      "pass": 0.15,
+      "fail": 0.35
+    },
+    "fr": {
+      "metric": "cer",
+      "pass": 0.3,
+      "fail": 0.4
+    },
+    "de": {
+      "metric": "cer",
+      "pass": 0.35,
+      "fail": 0.5
+    },
+    "ar": {
+      "metric": "cer",
+      "pass": 0.1,
+      "fail": 0.35
+    },
+    "bn": {
+      "metric": "wer",
+      "pass": 0,
+      "fail": 1
+    },
+    "ja": {
+      "metric": "cer",
+      "pass": 0.4,
+      "fail": 0.5
+    },
+    "ko": {
+      "metric": "cer",
+      "pass": 0.3,
+      "fail": 1
+    },
+    "id": {
+      "metric": "cer",
+      "pass": 0.2,
+      "fail": 0.4
+    },
+    "tr": {
+      "metric": "cer",
+      "pass": 0.25,
+      "fail": 0.35
+    },
+    "vi": {
+      "metric": "cer",
+      "pass": 0.2,
+      "fail": 0.3
+    },
+    "it": {
+      "metric": "cer",
+      "pass": 0.15,
+      "fail": 0.35
+    },
+    "pl": {
+      "metric": "cer",
+      "pass": 0.2,
+      "fail": 0.4
+    }
+  },
+  "cost": {
+    "wrongReject": 20,
+    "wrongApprove": 10,
+    "review": 1
+  },
+  "minBand": 0.1,
+  "langs": [
+    "en",
+    "es",
+    "hi",
+    "pt",
+    "fr",
+    "de",
+    "ar",
+    "bn",
+    "ja",
+    "ko",
+    "id",
+    "tr",
+    "vi",
+    "it",
+    "pl"
+  ],
+  "skip": [
+    "bn"
+  ]
+}
