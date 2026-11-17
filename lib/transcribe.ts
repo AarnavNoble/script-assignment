@@ -19,6 +19,7 @@ export const WHISPER_RATE = 16000;
  */
 export function resample(x: Float32Array, from: number, to: number): Float32Array {
   if (from === to) return x;
+  if (from > to && from % to === 0) return decimate(x, from / to);
   const ratio = to / from;
   const n = Math.floor(x.length * ratio);
   const out = new Float32Array(n);
@@ -40,6 +41,39 @@ export function resample(x: Float32Array, from: number, to: number): Float32Arra
       wsum += w;
     }
     out[i] = wsum ? acc / wsum : 0; // normalized taps: unity gain at DC, edges included
+  }
+  return out;
+}
+
+/**
+ * Integer-ratio downsampling (48 kHz -> 16 kHz is 3): the same windowed-sinc filter as resample(),
+ * but every output sample sits on an input sample, so the taps are computed once (~10x faster).
+ */
+function decimate(x: Float32Array, m: number): Float32Array {
+  const cutoff = 0.95 / m;
+  const zeros = 8;
+  const width = Math.ceil(zeros / cutoff);
+  const taps = new Float32Array(2 * width);
+  let wsum = 0;
+  for (let k = 0; k < 2 * width; k++) {
+    const d = width - 1 - k; // offset t - k for k = c - width + 1 .. c + width
+    const a = Math.PI * d * cutoff;
+    taps[k] = (a === 0 ? 1 : Math.sin(a) / a) * (0.5 + 0.5 * Math.cos((Math.PI * d) / (width + 1)));
+    wsum += taps[k];
+  }
+  const n = Math.floor(x.length / m);
+  const out = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    const start = i * m - width + 1;
+    let acc = 0;
+    if (start >= 0 && start + 2 * width <= x.length) {
+      for (let k = 0; k < 2 * width; k++) acc += x[start + k] * taps[k];
+      out[i] = acc / wsum;
+    } else { // edges: renormalize over the taps that exist, like resample()
+      let ws = 0;
+      for (let k = 0; k < 2 * width; k++) { const j = start + k; if (j < 0 || j >= x.length) continue; acc += x[j] * taps[k]; ws += taps[k]; }
+      out[i] = ws ? acc / ws : 0;
+    }
   }
   return out;
 }
