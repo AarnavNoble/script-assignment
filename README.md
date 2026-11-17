@@ -9,7 +9,7 @@ Hand each recording script to exactly one contributor at a time, get abandoned s
 - **The surprise:** handing out the lowest free id meant a stalled contributor's expired script was re-taken within seconds in busy languages, so **279 of 288 late takes were thrown away**. Handing out never-held scripts first accepts **243 of 275**, cuts lost contributor time by 87%, and records just as much. It's now the default.
 - **Heartbeats matter more than lease length:** at a 10-min lease they cut takes lost to network stalls from 992 to 46. A 10-15 min lease was the cheapest balance of idle scripts vs lost takes.
 - **~57 claims/s** (57x today's traffic) on one Postgres + one Node process before p95 passes 50 ms. The limit is the connection pool, not Postgres.
-- **QA checks the take matches the script** (local Whisper, per-language thresholds). On 2,520 test readings in 14 languages it rejects 90% of wrong readings outright, wrongly rejects 0.6% of correct ones, and **leaves only 3% of takes for a person** instead of all of them.
+- **QA checks the take matches the script** (local Whisper, per-language thresholds). On 2,520 test readings in 14 languages it rejects 90% of wrong readings outright and wrongly rejects 0.6% of correct ones. With the audio checks made relative to each script's length, **QA as a whole leaves 3% of takes for a person** (it was 33% before that change) instead of all of them.
 - The 4 popular languages run dry at **~2.7 h**; the low-pool alert gives **~2 h** of warning.
 - Demo: [60-second video](DEMO_URL)
 <!-- TLDR:END -->
@@ -141,11 +141,11 @@ A recording goes `pending_checks → approved | rejected | needs_review`, `needs
 | Correct readings (1,260) | 96.6% | 2.8% | **0.6%** (wrongly) |
 | Wrong readings (1,260) | **0.2%** (slipped through) | 9.6% | **90.2%** |
 
-At a realistic 95% correct / 5% wrong mix, **3.1% of takes go to a person instead of 100%**. Transcription is ~0.3 s per sentence (p95 0.9 s) on a laptop. Bengali is off (Whisper-small can't transcribe it reliably) and Swahili is review-only (no voice to test with). TTS voices are cleaner than real contributors, so real accents, children and cheap mics will move these numbers; the per-language table and caveats are in [results/script-check.md](results/script-check.md).
+At a realistic 95% correct / 5% wrong mix the script check alone sends 3.1% of takes to a person. The audio rules had been tuned for the original ~3-minute takes and, on one-sentence scripts, sent a third of correct readings to review on their own ("under 5 s", "mostly silent"); they now judge length and silence against the script's expected reading time. **QA as a whole: 91.9% approved, 3.0% to a person, 5.1% rejected** (before that change: 61.5 / 33.5 / 5.0). Transcription is ~0.3 s per sentence (p95 0.9 s) on a laptop. Bengali is off (Whisper-small can't transcribe it reliably) and Swahili is review-only (no voice to test with). TTS voices are cleaner than real contributors, so real accents, children and cheap mics will move these numbers; the per-language table and caveats are in [results/script-check.md](results/script-check.md).
 
-After submit, QA workers (`lib/qa.ts`, `lib/checks.ts`) decode the WAV and check what speech-data buyers reject: duration, silence ratio, speech level (inaudible / quiet), clipping (runs of clipped samples, so a single loud peak passes), leading/trailing padding, long internal pauses, a cut-off ending, and exact or near-duplicate audio. A clear fail rejects the take and puts the script back in the pool; a borderline take goes to the review queue on `/ops`; everything else is approved with its pay. Several workers can run at once: rows are taken with `SKIP LOCKED` plus a per-row advisory lock, and the duplicate check and the decision run under a per-audio-hash lock so two identical uploads can't both be approved.
+After submit, QA workers (`lib/qa.ts`, `lib/checks.ts`) decode the WAV and check what speech-data buyers reject: length against the script's expected reading time, silence between the first and last word, speech level (inaudible / quiet), clipping (runs of clipped samples, so a single loud peak passes), leading/trailing padding, long internal pauses, a cut-off ending, and exact or near-duplicate audio. A clear fail rejects the take and puts the script back in the pool; a borderline take goes to the review queue on `/ops`; everything else is approved with its pay. Several workers can run at once: rows are taken with `SKIP LOCKED` plus a per-row advisory lock, and the duplicate check and the decision run under a per-audio-hash lock so two identical uploads can't both be approved.
 
-Verdicts on synthetic takes (`npx tsx scripts/qa-demo.ts`; the same variants at 1 kHz get identical verdicts):
+Verdicts on synthetic takes (`npx tsx scripts/qa-demo.ts`; each is judged against the length of the script it reads; the same variants at 1 kHz get identical verdicts):
 
 | Take | Verdict | Why | Duration | Silence | Speech level | Clipped |
 |---|---|---|---|---|---|---|
@@ -155,12 +155,14 @@ Verdicts on synthetic takes (`npx tsx scripts/qa-demo.ts`; the same variants at 
 | quiet | review | quiet | 11.1 s | 31% | -40 dB | 0% |
 | heavily clipped | fail | distorted | 11.1 s | 24% | -1 dB | 48% |
 | mildly clipped | review | clipping | 11.1 s | 24% | -9 dB | 0.4% |
-| 1.9 s | fail | too_short | 1.9 s | | | |
-| 4.2 s | review | too_short | 4.2 s | | | |
-| 5 s padding each end | review | mostly_silent, padded | 20.0 s | 58% | | |
+| far shorter than the script (0.15x) | fail | truncated | 1.9 s | | | |
+| somewhat short (0.35x) | review | truncated | 4.2 s | | | |
+| 5 s padding each end | review | padded | 20.0 s | 58% | | |
 | 20 s padding each end | fail | padded | 50.0 s | 83% | | |
 | 8 s pause mid-take | review | long_pause | 19.1 s | 56% | | |
 | cut off mid-word | review | truncated | 10.6 s | 20% | | |
+| 3.5x as long as the script | review | lengthened | 31.1 s | | | |
+| 7x as long as the script | fail | lengthened | | | | |
 
 ## Results
 
