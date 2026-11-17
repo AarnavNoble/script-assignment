@@ -3,20 +3,17 @@
 Hand each recording script to exactly one contributor at a time, get abandoned scripts back quickly, and never lose or double-pay a recording. A small but real version: Next.js + Postgres + S3-compatible storage, with a browser recorder, an automatic QA step, an ops view, a test suite, a 300-contributor simulation, and experiments that measure the tradeoffs.
 
 <!-- TLDR:START -->
-**TL;DR**
-- Every claim is a **lease with a fencing token**: one atomic `FOR UPDATE SKIP LOCKED` claim, heartbeats to extend it, and expired leases count as free in the claim query itself.
-- **0 scripts handed out twice** across 7,267 leases in a simulation of 300 contributors closing tabs, refreshing, opening second tabs and stalling on bad networks (plus 129 tests against the real Postgres and storage). Abandoned scripts are claimable again exactly at lease end.
-- **The surprise:** handing out the lowest free id meant a stalled contributor's expired script was re-taken within seconds in busy languages, so **279 of 288 late takes were thrown away**. Handing out never-held scripts first accepts **243 of 275**, cuts lost contributor time by 87%, and records just as much. It's now the default.
-- **Heartbeats matter more than lease length:** at a 10-min lease they cut takes lost to network stalls from 992 to 46. A 10-15 min lease was the cheapest balance of idle scripts vs lost takes.
-- **~57 claims/s** (57x today's traffic) on one Postgres + one Node process before p95 passes 50 ms. The limit is the connection pool, not Postgres.
-- **QA checks the take matches the script** (local Whisper, per-language thresholds). On 2,520 test readings in 14 languages it rejects 90% of wrong readings outright and wrongly rejects 0.6% of correct ones. With the audio checks made relative to each script's length, **QA as a whole leaves 3% of takes for a person** (it was 33% before that change) instead of all of them.
-- The 4 popular languages run dry at **~2.7 h**; the low-pool alert gives **~2 h** of warning.
-- Demo: [60-second video](DEMO_URL)
+**TL;DR** · Demo: [90-second video](DEMO_URL)
+- **The surprise.** My first version handed out the lowest free script id. In the simulation, that meant a stalled contributor's expired script was re-taken within seconds in busy languages, so **279 of 288 late takes were thrown away**. Handing out never-held scripts first accepts **243 of 275**: wasted contributor time drops from ~93 to ~13 hours per 3 simulated hours, with the same number of recordings (both runs QA off). It's now the default.
+- **QA checks the take matches the script** (Whisper, run locally). The script check alone, cross-validated on 2,520 synthetic readings in 14 languages: rejects 90% of wrong readings and wrongly rejects 0.6% of correct ones. QA as a whole (2,580 readings, 15 languages) leaves **3% of takes for a person** instead of all of them. The length rules behind part of that were calibrated on the same synthetic voices, so expect more on real audio.
+- **0 scripts handed out twice** across 7,267 leases while 300 simulated contributors closed tabs, refreshed, opened second tabs and stalled, plus 129 tests against the real Postgres and storage.
+- **Capacity:** one Postgres + one Node process handles ~57 claims/s (57x the interview's traffic) at p95 under 50 ms with a 20-connection pool, and 75/s at p95 37 ms with 50 connections; the ceiling is the pool, not Postgres. The 4 popular languages run dry at ~2.7 h, and the low-pool alert gives ~2 h of warning.
+- **How:** every claim is a lease with a fencing token: one atomic `FOR UPDATE SKIP LOCKED` claim, heartbeats to extend it, and expired leases count as free in the claim query itself.
 <!-- TLDR:END -->
 
 ## The problem
 
-Contributors record scripted audio in the browser. Each script should get exactly one good recording, so while someone is recording a script nobody else may get it. But a browser can vanish at any moment (closed laptop, dead battery, lost signal) without telling the server, so a held script must come back on its own. Traffic: ~2,000 registered contributors, ~300 online at once, 16 languages with ~1,200 scripts each, ~80% of contributors in 4 popular languages, ~3-minute recordings (~17 MB as 48 kHz 16-bit WAV). One Postgres, a web server, object storage and a periodic job.
+Contributors record scripted audio in the browser. Each script should get exactly one good recording, so while someone is recording a script nobody else may get it. But a browser can vanish at any moment (closed laptop, dead battery, lost signal) without telling the server, so a held script must come back on its own. Traffic (figures from the interview): ~2,000 registered contributors, ~300 online at once, 16 languages with ~1,200 scripts each, ~80% of contributors in 4 popular languages, ~3-minute recordings (~17 MB as 48 kHz 16-bit WAV). One Postgres, a web server, object storage and a periodic job.
 
 ## Design
 
@@ -136,12 +133,12 @@ A recording goes `pending_checks → approved | rejected | needs_review`, `needs
 
 **Did they read the script?** The audio checks below can't tell whether a contributor read the right sentence, which otherwise means a person listens to every take. With `WHISPER_URL` set, QA transcribes each take with whisper.cpp (ggml-small, local) and compares it with the script by character error rate, with thresholds per language: approve, reject as `wrong_script`, or send to review with the transcript shown to the reviewer. Measured on 2,520 synthesized takes in 14 languages (macOS voices: correct readings, a different sentence, half the sentence, the wrong language, noisy and fast readings), with thresholds chosen on half of each language's sentences and scored on the other half:
 
-| | Approved | To review | Rejected |
+| Script check alone (14 languages) | Approved | To review | Rejected |
 |---|---|---|---|
 | Correct readings (1,260) | 96.6% | 2.8% | **0.6%** (wrongly) |
 | Wrong readings (1,260) | **0.2%** (slipped through) | 9.6% | **90.2%** |
 
-At a realistic 95% correct / 5% wrong mix the script check alone sends 3.1% of takes to a person. The audio rules had been tuned for the original ~3-minute takes and, on one-sentence scripts, sent a third of correct readings to review on their own ("under 5 s", "mostly silent"); they now judge length and silence against the script's expected reading time. **QA as a whole: 91.9% approved, 3.0% to a person, 5.1% rejected** (before that change: 61.5 / 33.5 / 5.0). Transcription is ~0.3 s per sentence (p95 0.9 s) on a laptop. Bengali is off (Whisper-small can't transcribe it reliably) and Swahili is review-only (no voice to test with). TTS voices are cleaner than real contributors, so real accents, children and cheap mics will move these numbers; the per-language table and caveats are in [results/script-check.md](results/script-check.md).
+At a realistic 95% correct / 5% wrong mix the script check alone sends 3.1% of takes to a person. The audio rules had been tuned for the original ~3-minute takes and, on one-sentence scripts, sent a third of correct readings to review on their own ("under 5 s", "mostly silent"); they now judge length and silence against the script's expected reading time. **QA as a whole** (audio checks + script check, 2,580 takes, 15 languages, Bengali on audio checks only) at the same mix: **91.9% approved, 3.0% to a person, 5.1% rejected** (before that change: 61.5 / 33.5 / 5.0); wrong readings: 1.7% slip through, 8.1% to review, 90.2% rejected. The per-language reading pace behind the length rules was calibrated on the same synthetic voices, so this part is in-sample; the script-check thresholds above are cross-validated. Transcription is ~0.3 s per sentence (p95 0.9 s) on a laptop. Bengali is off (Whisper-small can't transcribe it reliably) and Swahili is review-only (no voice to test with). TTS voices are cleaner than real contributors, so real accents, children and cheap mics will move these numbers; the per-language table and caveats are in [results/script-check.md](results/script-check.md).
 
 After submit, QA workers (`lib/qa.ts`, `lib/checks.ts`) decode the WAV and check what speech-data buyers reject: length against the script's expected reading time, silence between the first and last word, speech level (inaudible / quiet), clipping (runs of clipped samples, so a single loud peak passes), leading/trailing padding, long internal pauses, a cut-off ending, and exact or near-duplicate audio. A clear fail rejects the take and puts the script back in the pool; a borderline take goes to the review queue on `/ops`; everything else is approved with its pay. Several workers can run at once: rows are taken with `SKIP LOCKED` plus a per-row advisory lock, and the duplicate check and the decision run under a per-audio-hash lock so two identical uploads can't both be approved.
 
@@ -181,8 +178,8 @@ Real HTTP API, time scaled 60x (a 10-min lease is 10 real seconds). Sessions mix
 | Double submit produced exactly one recording | 241 of 241 |
 | Heartbeating sessions that lost their lease | 0 |
 | Vanished tab → script claimable again | 10.0 min after the last heartbeat (= lease) |
-| Late takes after a stall: accepted / rejected | 265 / 25 ($62 of contributor time lost) |
-| QA: approved / rejected (silent, too short, distorted) / review | 6,175 / 776 / 0; every rejection matched the audio it was given |
+| Late takes after a stall: accepted / rejected | 265 / 25 (QA on; the claim-order runs below had QA off, hence 243 / 275 there) |
+| QA: approved / rejected (silent, too short, distorted) / review | 6,175 / 776 / 0; every rejection matched the audio it was given. The simulation's takes are synthetic tones with injected defects and the script check is off; the 3% review figure comes from the script-check evaluation below |
 | Approved audio | 318 h = $1,586 at $5/approved hour |
 | Popular languages ran out | 2.66-2.68 h; no long-tail language ran out |
 
@@ -190,7 +187,7 @@ Real HTTP API, time scaled 60x (a 10-min lease is 10 real seconds). Sessions mix
 
 ### Lease length (cost of idle scripts vs takes lost to network stalls)
 
-Stall lengths are fixed across leases (lognormal, median 3 min), so a shorter lease really does cause more false expiries. Cost = contributor time on rejected takes + abandoned scripts idle while their language had run out, both at $5/h. Lowest-id claim order, 2 seeds, 6 simulated hours per lease:
+Stall lengths are fixed across leases (lognormal, median 3 min), so a shorter lease really does cause more false expiries. Cost = contributor time on rejected takes + abandoned scripts idle while their language had run out, both valued at an assumed $5/h of contributor time. Lowest-id claim order, 2 seeds, 6 simulated hours per lease:
 
 | Lease | 1 min | 2 min | 5 min | 10 min | 15 min | 10 min, no heartbeat |
 |---|---|---|---|---|---|---|
@@ -198,9 +195,11 @@ Stall lengths are fixed across leases (lognormal, median 3 min), so a shorter le
 | Takes lost to stalls | 499 | 393 | 158 | 46 | 17 | **992** |
 | Cost per hour | $47.60 | $43.02 | $28.86 | $19.09 | **$17.90** | $185 |
 
+The no-heartbeat column is a sanity check, not a finding: without heartbeats any session longer than the lease loses its script by design (915 of those 992 were ordinary long sessions, not stalls). The model and the simulation agree: the number of late submits tracks the predicted number of stalls longer than the lease (e.g. 544 vs 540 at 1 min, 51 vs 39 at 10 min).
+
 ![lease tradeoff](results/lease_tradeoff.png)
 
-With the default never-held-first order, stalls barely lose takes at any lease (10 / 3 / 2 / 0 at 2 / 5 / 10 / 15 min), so a shorter lease wins on recovery: $4.38/h at 5 min vs $8.43 at 10 min (one seed). I kept the default at 10 min: browsers throttle timers in background tabs, so heartbeats can arrive late, and the extra margin costs about $4 per hour.
+**With the default never-held-first order the picture changes:** stalls barely lose takes at any lease (10 / 3 / 2 / 0 at 2 / 5 / 10 / 15 min), so a shorter lease wins on recovery: $4.38/h at 5 min vs $8.43 at 10 min (one seed). I kept the default at 10 min: browsers throttle timers in background tabs, so heartbeats can arrive late, and the extra margin costs about $4 per hour.
 
 ### Claim order
 
@@ -209,16 +208,16 @@ Same seed, QA off. v1 only reordered rows still marked `claimed`; the 5-min job 
 | | lowest id | never-held first v1 | v2 | **v3 (default)** |
 |---|---|---|---|---|
 | Late takes accepted | 9 / 288 | 41 / 279 | 246 / 278 | **243 / 275** |
-| Contributor time lost per 3 h | $466 | $412 | $58 | **$63** |
+| Contributor time lost per 3 h | 93 h | 82 h | 12 h | **13 h** |
 | Recordings | 6,487 | 6,525 | 6,532 | 6,499 |
 
 ### Load
 
-Open-loop, real time, one Node process, a 20-connection pool:
+Open-loop, real time, one Node process, a 20-connection pool (run on the build before the v3 claim query; v3's picks are index scans, 0.09-0.13 ms in Postgres):
 
-| Claims/s | 1 | 10 | 57 | 75 | 75, pool of 50 | 91 (100x) |
+| Claims/s | 1 | 10 | 57 | 75 | 75, pool of 50 | 100 target (91 achieved) |
 |---|---|---|---|---|---|---|
-| Claim p95 | 24 ms | 16 ms | **19 ms** | 1,111 ms | 37 ms | 5,099 ms (21 errors) |
+| Claim p95 | 24 ms | 16 ms | **19 ms** | 1,111 ms | **37 ms** (13 errors of 25,496) | 5,099 ms (21 errors) |
 
 All claims in one hot language: p95 22-31 ms. Directly in SQL with 32 concurrent claimers, `SKIP LOCKED` did 4,142 claims/s at p95 8 ms vs 1,836/s at p95 43 ms with plain `FOR UPDATE`.
 
