@@ -23,6 +23,8 @@ import { analyze, expectedDurationS, type Check } from './checks';
 import { saveMetrics, approve, reject, sendToReview } from './review';
 import { AppError } from './errors';
 import { config } from './config';
+import { transcribe as whisperTranscribe, type Transcriber } from './transcribe';
+import { scriptMatch, describeThreshold, thresholdsFor } from './scriptmatch';
 
 /** Advisory-lock namespace (first key of the two-int form) so we never collide with other users. */
 export const QA_LOCK_NS = 0x51a; // "QA"
@@ -37,12 +39,27 @@ export type QaResult = {
   errors: number;
 };
 
-type Row = { id: number; s3_key: string; body: string | null };
+type Row = { id: number; s3_key: string; body: string | null; language: string | null };
 type Logger = Pick<Console, 'error' | 'warn'>;
 
-export async function runQaOnce(opts: { limit?: number; logger?: Logger } = {}): Promise<QaResult> {
+/** The script_match check as stored in recordings.checks: a Check plus what the reviewer needs to see. */
+export type ScriptCheck = Check & { transcript?: string; metric?: string; transcribeMs?: number };
+const TRANSCRIPT_MAX_CHARS = 500;
+
+export type QaOptions = {
+  limit?: number;
+  logger?: Logger;
+  /**
+   * Speech-to-text for the script check. Default: lib/transcribe.ts when WHISPER_URL is set, else the
+   * check is off. Tests inject a fake; null forces it off.
+   */
+  transcriber?: Transcriber | null;
+};
+
+export async function runQaOnce(opts: QaOptions = {}): Promise<QaResult> {
   const limit = opts.limit ?? 10;
   const log = opts.logger ?? console;
+  const transcriber = opts.transcriber !== undefined ? opts.transcriber : config.whisperUrl() ? whisperTranscribe : null;
   const out: QaResult = { processed: 0, approved: 0, rejected: 0, review: 0, skipped: 0, errors: 0 };
 
   const c = await pool().connect();
@@ -51,7 +68,7 @@ export async function runQaOnce(opts: { limit?: number; logger?: Logger } = {}):
     const rows = await claimBatch(c, limit);
     for (const row of rows) {
       try {
-        const decision = await processOne(row, c);
+        const decision = await processOne(row, c, transcriber);
         out.processed++;
         out[decision]++;
       } catch (e) {
@@ -80,7 +97,7 @@ async function claimBatch(c: PoolClient, limit: number): Promise<Row[]> {
   await c.query('BEGIN');
   try {
     const cand = await c.query<Row>(
-      `SELECT r.id, r.s3_key, s.body
+      `SELECT r.id, r.s3_key, s.body, s.language
        FROM recordings r JOIN scripts s ON s.id = r.script_id
        WHERE r.status = 'pending_checks'
          AND NOT EXISTS (SELECT 1 FROM pg_locks l
@@ -106,7 +123,7 @@ async function claimBatch(c: PoolClient, limit: number): Promise<Row[]> {
 
 type Decision = 'approved' | 'rejected' | 'review';
 
-async function processOne(row: Row, c: PoolClient): Promise<Decision> {
+async function processOne(row: Row, c: PoolClient, transcriber: Transcriber | null): Promise<Decision> {
   let bytes: Buffer;
   try {
     bytes = await getObjectBytes(row.s3_key);
@@ -145,21 +162,73 @@ async function processOne(row: Row, c: PoolClient): Promise<Decision> {
   // Save first: the duplicate lookup below relies on our own hash being visible to other workers.
   await saveMetrics(row.id, a.metrics);
 
+  // Script check: transcription is slow (~0.3 s per sentence, seconds for a long take), so it runs
+  // here, outside the per-hash lock below; only the decision runs inside it.
+  const script = transcriber ? await scriptCheck(row, bytes, a, transcriber) : null;
+
   // Hold a per-hash lock from the duplicate lookup until the decision commits. Otherwise two workers
   // with identical uploads can each look before the other has decided, and both approve.
   // Taken on this worker's own session connection (no second pool connection held while waiting).
   await c.query('SELECT pg_advisory_lock($1, hashtext($2))', [QA_DUP_NS, a.metrics.sha256]);
   try {
-    return await decide(row, a);
+    return await decide(row, a, script);
   } finally {
     await c.query('SELECT pg_advisory_unlock($1, hashtext($2))', [QA_DUP_NS, a.metrics.sha256]);
   }
 }
 
-async function decide(row: Row, a: ReturnType<typeof analyze>): Promise<Decision> {
+/**
+ * Transcribe the take and compare it with the script. Never throws for transcriber problems: a take
+ * without a transcript gets a 'pass' check that says why it was skipped, and is decided on the audio
+ * checks alone. Skipped (without calling the transcriber) when the audio already failed, since the
+ * take is rejected either way.
+ */
+async function scriptCheck(row: Row, wav: Buffer, a: ReturnType<typeof analyze>, transcriber: Transcriber): Promise<ScriptCheck> {
+  const skip = (why: string): ScriptCheck => ({ name: 'script_match', value: null, status: 'pass', threshold: `skipped: ${why}` });
+  if (!row.body || !row.language) return skip('no script text');
+  if (a.verdict === 'fail') return skip('audio checks already failed');
+  const policy = thresholdsFor(row.language);
+  if (policy.skip) return skip(policy.skip);
+  let t: Awaited<ReturnType<Transcriber>> = null;
+  try {
+    t = await transcriber(wav, row.language);
+  } catch {
+    t = null; // an injected transcriber that throws is treated like one that is down
+  }
+  if (!t) return skip('transcriber unavailable');
+  const m = scriptMatch(row.body, t.text, row.language);
+  const text = t.text.trim();
+  return {
+    name: 'script_match',
+    value: Math.round(m.errorRate * 10000) / 10000,
+    unit: m.metric,
+    status: m.verdict === 'fail' ? 'fail' : m.verdict === 'review' ? 'warn' : 'pass',
+    threshold: describeThreshold(m.thresholds),
+    reason: m.verdict === 'fail' ? 'wrong_script' : m.verdict === 'review' ? 'script_mismatch' : undefined,
+    transcript: text.length > TRANSCRIPT_MAX_CHARS ? `${text.slice(0, TRANSCRIPT_MAX_CHARS)}…` : text,
+    metric: m.metric,
+    transcribeMs: t.ms,
+  };
+}
+
+async function decide(row: Row, a: ReturnType<typeof analyze>, script: ScriptCheck | null = null): Promise<Decision> {
   const reasons = [...a.reasons];
   let verdict = a.verdict;
   const extra: Check[] = [];
+
+  // Script check, combined like the audio checks: any fail rejects, else any warn sends to review.
+  if (script) {
+    extra.push(script);
+    if (script.status === 'fail') {
+      if (verdict !== 'fail') reasons.length = 0;
+      reasons.push('wrong_script');
+      verdict = 'fail';
+    } else if (script.status === 'warn' && verdict !== 'fail') {
+      if (verdict === 'pass') reasons.length = 0;
+      reasons.push('script_mismatch');
+      verdict = 'review';
+    }
+  }
 
   // Exact duplicate. "Earliest wins": the other copy counts if it's older or already past QA, so
   // two workers checking two identical uploads at once reject exactly one of them.

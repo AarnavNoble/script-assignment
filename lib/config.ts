@@ -23,4 +23,13 @@ export const config = {
   claimOrder: () => (process.env.CLAIM_ORDER === 'lowest_id' ? 'lowest_id' : 'fresh_first') as 'lowest_id' | 'fresh_first',
   // pay rate per approved hour of audio, in cents
   payCentsPerHour: () => num('PAY_CENTS_PER_HOUR', 500),
+  // script check (lib/transcribe.ts): whisper.cpp server base URL, e.g. http://127.0.0.1:8178.
+  // Unset or empty = the check is off and QA behaves exactly as before.
+  whisperUrl: () => (process.env.WHISPER_URL ?? '').replace(/\/+$/, ''),
+  // per attempt; one retry after a failure. A 3-min take on ggml-small takes a few seconds.
+  whisperTimeoutMs: () => num('WHISPER_TIMEOUT_MS', 30000),
+  // Whisper's temperature fallback (server-side) for the first decode; see lib/transcribe.ts. Off by
+  // default (0): it multiplied time per take ~5x on languages Whisper-small handles badly (Bengali)
+  // and the script check only needs a rough match. See results/script-check.md.
+  whisperTemperatureInc: () => num('WHISPER_TEMPERATURE_INC', 0),
 };
