@@ -6,7 +6,7 @@ export const metadata = { title: 'Findings · Script Recorder' };
 const headline = [
   { value: '0', label: 'scripts handed out twice', note: 'across 7,267 leases, 300 contributors misbehaving for 3 simulated hours' },
   { value: '243 / 275', label: 'late takes saved', note: 'was 9 / 288 handing out the lowest free id; never-held first: ~93 → ~13 contributor-hours wasted per 3 h (QA off)' },
-  { value: '~57 / s', label: 'claims before p95 > 50 ms', note: '57x the interview’s traffic on one Postgres + one Node process; 75/s at p95 37 ms with a 50-connection pool' },
+  { value: '~57 / s', label: 'claims before p95 > 50 ms', note: '57x the ~1 claim/s target traffic on one Postgres + one Node process; 75/s at p95 37 ms with a 50-connection pool' },
   { value: '~2 h', label: 'warning before a pool runs dry', note: 'popular languages run out at ~2.7 h at today’s traffic mix' },
   { value: '3%', label: 'of takes left for a person', note: 'QA as a whole on synthetic test voices, 15 languages; the script check alone rejects 90% of wrong readings, 0.6% of correct ones wrongly' },
 ];
